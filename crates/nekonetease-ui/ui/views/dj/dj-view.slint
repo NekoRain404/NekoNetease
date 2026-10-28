@@ -1,0 +1,236 @@
+import { Theme } from "../../theme.slint";
+import { Dj } from "../../globals/dj.slint";
+import { RowCovers } from "../../globals/tracks.slint";
+import { ArtworkImage } from "../../components/artwork-image.slint";
+import { HorizontalCardStrip } from "../../components/grid/horizontal-card-strip.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { ProgramDetailView } from "program-detail-view.slint";
+import { DjProgramList } from "program-list.slint";
+
+// The podcast page: a recommended-station strip over the opened station's programme list, with one
+// programme's page replacing the content while it is open.
+export component DjView inherits Rectangle {
+    background: Theme.base;
+
+    init => { Dj.load(); }
+
+    if Dj.detail-open: ProgramDetailView {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    if !Dj.detail-open: VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-left: Theme.pad-lg;
+        padding-right: Theme.pad-lg;
+        padding-top: Theme.pad-lg;
+        spacing: Theme.pad-md;
+
+        HorizontalLayout {
+            height: 40px;
+            spacing: Theme.pad-md;
+
+            Text {
+                text: @tr("Podcast radio");
+                color: Theme.page-title-color;
+                font-size: Theme.page-title-size;
+                font-weight: Theme.page-title-weight;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Refresh");
+                    enabled: !Dj.radios-loading;
+                    clicked => { Dj.refresh(); }
+                }
+            }
+        }
+
+        if Dj.radios-loading: Text {
+            text: @tr("Loading…");
+            color: Theme.subtext0;
+            font-size: Theme.font-size-sm;
+        }
+
+        if !Dj.radios-loading && Dj.radios-error != "": VerticalLayout {
+            spacing: Theme.pad-md;
+            Text {
+                text: Dj.radios-error;
+                color: Theme.subtext0;
+                wrap: word-wrap;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Retry");
+                    clicked => { Dj.refresh(); }
+                }
+            }
+        }
+
+        if !Dj.radios-loading && Dj.radios-error == "": HorizontalCardStrip {
+            horizontal-stretch: 1;
+            heading: @tr("Recommended stations");
+            rows: Dj.radios;
+            card-width: 148px;
+            card-height: 196px;
+            circular: false;
+            show-play-count: false;
+            show-play-overlay: false;
+            fallback-icon: "playlist";
+            empty-text: @tr("No radio stations available");
+            request-cover(path) => {
+                return RowCovers.request(path, "", "", RowCovers.generation);
+            }
+            row-clicked(index) => { Dj.open-radio(index); }
+            play-clicked(index) => { Dj.open-radio(index); }
+        }
+
+        if Dj.radio-remote-id != "": VerticalLayout {
+            spacing: Theme.pad-sm;
+
+            HorizontalLayout {
+                spacing: Theme.pad-md;
+
+                ArtworkImage {
+                    tile-size: 72px;
+                    fallback-icon: "playlist";
+                    artwork-path: Dj.radio-artwork-path;
+                    cover: RowCovers.request(Dj.radio-artwork-path, "", "", RowCovers.generation);
+                }
+
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: center;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: Dj.radio-title;
+                        color: Theme.text;
+                        font-size: Theme.font-size-lg;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    if Dj.radio-host != "": Text {
+                        text: Dj.radio-host;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        overflow: elide;
+                    }
+                    if Dj.radio-description != "": Text {
+                        text: Dj.radio-description;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        overflow: elide;
+                    }
+                }
+
+                ActionPill {
+                    PillButton {
+                        icon: Dj.radio-subscribed ? "check" : "add";
+                        text: Dj.radio-subscribed ? @tr("Subscribed") : @tr("Subscribe");
+                        enabled: !Dj.radio-loading && !Dj.radio-subscribe-pending;
+                        clicked => { Dj.toggle-subscribe(); }
+                    }
+                }
+            }
+
+            if Dj.radio-loading: Text {
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if !Dj.radio-loading && Dj.radio-error != "": VerticalLayout {
+                spacing: Theme.pad-sm;
+                Text {
+                    text: Dj.radio-error;
+                    color: Theme.subtext0;
+                    wrap: word-wrap;
+                }
+                ActionPill {
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        clicked => { Dj.retry-radio(); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                Text {
+                    text: @tr("Programmes");
+                    color: Theme.text;
+                    font-size: Theme.font-size-md;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                if Dj.programs-has-more: ActionPill {
+                    PillButton {
+                        icon: "expand_more";
+                        text: @tr("Load more");
+                        enabled: !Dj.programs-loading && !Dj.programs-loading-more;
+                        clicked => { Dj.load-more-programs(); }
+                    }
+                }
+            }
+
+            if Dj.programs-loading: Text {
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if !Dj.programs-loading && Dj.programs-error != "": VerticalLayout {
+                spacing: Theme.pad-sm;
+                Text {
+                    text: Dj.programs-error;
+                    color: Theme.subtext0;
+                    wrap: word-wrap;
+                }
+                ActionPill {
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        clicked => { Dj.retry-programs(); }
+                    }
+                }
+            }
+
+            if !Dj.programs-loading && Dj.programs-error == "" && Dj.programs.length == 0: Text {
+                text: @tr("No programmes yet.");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if Dj.programs.length > 0: DjProgramList {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                rows: Dj.programs;
+                columns <=> Dj.columns;
+                open-program(index) => { Dj.open-program-row(index); }
+            }
+        }
+
+        if Dj.radio-remote-id == ""
+            && Dj.radios.length > 0
+            && !Dj.radios-loading
+            && Dj.radios-error == "": Text {
+            text: @tr("Choose a station to browse its programmes.");
+            color: Theme.subtext0;
+            font-size: Theme.font-size-sm;
+        }
+
+        // Collects the surplus the vertical layout would otherwise spread between the
+        // header, strip and states while the programme list is not mounted.
+        if Dj.programs.length == 0: Rectangle { vertical-stretch: 1; }
+    }
+}

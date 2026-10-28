@@ -1,0 +1,99 @@
+import { Theme } from "../../theme.slint";
+import { SettingsPage } from "../../globals/settings-page.slint";
+import { MaterialIcon } from "../material-icon.slint";
+import { DisabledScrim } from "disabled-scrim.slint";
+
+// The "icon · label · control" row inside a `SectionCard`; the host supplies the
+// control through `@children`.
+//
+// `disabled` dims the row *and* overlays a TouchArea that swallows the pointer,
+// because Slint propagates nothing across `@children` — the alternative is
+// threading a `disabled` through every consumer's control.
+export component SettingRow inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <string> description;
+    in property <bool>   disabled: false;
+    // Caps the description, so a long single-line string wraps into a reading
+    // column instead of inflating the row's preferred width and stretching the
+    // whole card. The large default is a sentinel for "unbounded".
+    in property <length> description-max-width: 100000px;
+
+    // Folded into each brush rather than spent on the root's `opacity`: a row stays
+    // disabled for as long as the setting it depends on is off, and an opacity layer
+    // is sized to child geometry, so it would crop glyph ink outside the line box for
+    // that whole time. Only the control has no brush to reach, being `@children`, so a
+    // `DisabledScrim` dims it instead.
+    property <float> dim: root.disabled ? Theme.dim-disabled : 0.0;
+    animate dim { duration: Theme.dur-fast; easing: ease-in-out; }
+
+    HorizontalLayout {
+        padding: Theme.pad-lg;
+        spacing: Theme.pad-lg;
+        alignment: stretch;
+
+        // Pinned, so the labels start at the same x however narrow a glyph is.
+        VerticalLayout {
+            alignment: center;
+            MaterialIcon {
+                name: root.icon;
+                icon-size: SettingsPage.row-icon-w;
+                icon-color: Theme.text;
+                fade: 1.0 - root.dim;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.pad-xs;
+            horizontal-stretch: 1;
+
+            // Wrapped, and that is what makes the whole card compressible: a
+            // no-wrap `Text` reports its full rendered width as its layout
+            // *minimum*, so every label was an incompressible term no narrowing
+            // could move, and the control ended up past the panel edge. Wrapped,
+            // the minimum is the longest single word.
+            Text {
+                text: root.label;
+                color: Theme.text.transparentize(root.dim);
+                font-size: Theme.font-size-md;
+                wrap: word-wrap;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                color: Theme.text-muted.transparentize(root.dim);
+                font-size: Theme.font-size-sm;
+                wrap: word-wrap;
+                max-width: root.description-max-width;
+            }
+        }
+
+        // The consumer's element sizes itself and the layout only centres it. The wrapper is
+        // the scrim's box: as a conditional child it fills the wrapper without sizing it.
+        Rectangle {
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.pad-sm;
+                @children
+            }
+
+            if root.dim > 0: DisabledScrim {
+                x: 0;
+                y: 0;
+                width: 100%;
+                height: 100%;
+                dim: root.dim;
+            }
+        }
+    }
+
+    // A handler-less TouchArea over the row, so the click stops here. Enabled,
+    // it's absent from the tree entirely.
+    if root.disabled: TouchArea {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        mouse-cursor: default;
+    }
+}

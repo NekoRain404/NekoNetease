@@ -1,0 +1,42 @@
+name: minisign sign
+description: Sign every artifact handed over with the updater key, prehashed, carrying the trusted comment the client parses.
+inputs:
+  files:
+    description: Newline-separated artifact paths.
+    required: true
+  secret-key:
+    description: The entire secret key file, base64-encoded.
+    required: true
+  password:
+    description: The key's passphrase, piped to minisign's prompt.
+    required: false
+    default: ""
+  trusted-comment:
+    description: One template; `{file}` is substituted per artifact.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        MINISIGN_SECRET_KEY: ${{ inputs.secret-key }}
+        MINISIGN_PASSWORD: ${{ inputs.password }}
+        COMMENT: ${{ inputs.trusted-comment }}
+        ARTIFACTS: ${{ inputs.files }}
+      run: |
+        # An earlier artifact's failed signature must not be masked by a later success.
+        set -euo pipefail
+        # `-s` takes a *path*, and the repository secret holds the key file's bytes base64'd,
+        # so it has to be materialised first — mode 600, under the runner's temp dir.
+        umask 077
+        key="$RUNNER_TEMP/minisign.key"
+        printf '%s' "$MINISIGN_SECRET_KEY" | base64 -d > "$key"
+        trap 'rm -f "$key"' EXIT
+        while IFS= read -r file; do
+          [ -n "$file" ] || continue
+          # Prehashed (`-SHm`) so the client can verify while the artifact streams; the
+          # per-artifact comment substitutes `{file}` before the signature is written.
+          # minisign prompts on the terminal; a pipe is how CI answers that prompt.
+          printf '%s\n' "$MINISIGN_PASSWORD" \
+            | minisign -SHm "$file" -t "${COMMENT//\{file\}/$file}" -s "$key"
+        done <<< "$ARTIFACTS"

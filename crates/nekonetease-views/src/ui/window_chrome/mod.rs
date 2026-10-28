@@ -1,0 +1,288 @@
+//! Wires the `WindowChrome` global and the `Theme.use-native-titlebar`
+//! property to the persisted setting, the `slint::Window` API, and
+//! winit (via Slint's `unstable-winit-030` accessor).
+//!
+//! Seven reasons it exists: hydrating `Theme.use-native-titlebar` (in the gap between
+//! `AppWindow::new()` and `app.show()`, where boot calls [`install`], so the window maps
+//! with its frame decided rather than swapping it on screen), the
+//! window control callbacks ([`controls`]), window dragging and resizing ([`winit_filter`],
+//! [`drag_region`], [`resize_grab`], [`resize_release`]), the Slint tick a Win32 drag parks
+//! (`parked_loop`), file-drop coalescing ([`drop_coalescer`]), geometry ([`geometry`]) and the
+//! restart flow.
+//!
+//! **Dragging and resizing belong at the winit layer.** `drag_window()` from a `TouchArea`'s
+//! `pointer-event` leaks the grab: the compositor takes pointer ownership for the move and
+//! the matching `Released` never reaches Slint, so a `TouchArea` that returned `GrabMouse`
+//! stays pressed forever and every later click routes back to it. A resize drag is the same
+//! handover. So the filter intercepts `MouseInput { Pressed, Left }` before dispatch, against
+//! cells Slint callbacks keep in step with drag-region and resize-grab hover.
+//!
+//! **A restart persists, then hands off to [`request_respawn_and_quit`]**, which arms
+//! [`RESPAWN_AFTER_EXIT`] and quits the loop so `main()` falls through to shutdown before
+//! the new process takes over. One function rather than three, since it owns the refusal.
+//! The native titlebar toggle takes this path because boot is the only writer of
+//! `Theme.use-native-titlebar`, and of `Settings.match-unfocused-bg`, which a KDE enable turns
+//! on alongside. The frame itself needs no restart: Slint applies `no-frame` live, which is how
+//! the miniplayer drops the native one.
+
+mod controls;
+mod drag_region;
+mod drop_coalescer;
+pub mod geometry;
+#[cfg(target_os = "windows")]
+pub mod parked_loop;
+mod resize_grab;
+mod resize_release;
+mod winit_filter;
+
+pub use drop_coalescer::{
+    is_playlist_detail_open, is_queue_sheet_open, set_current_playlist_id, set_queue_sheet_open,
+};
+
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use slint::ComponentHandle;
+use slint::winit_030::WinitWindowAccessor;
+use slint::winit_030::winit::window::WindowLevel;
+
+use nekonetease_app::state::AppState;
+use nekonetease_core::error::{AppError, describe};
+use nekonetease_core::utils::toast::{self, ToastKind};
+#[cfg(target_os = "linux")]
+use nekonetease_platform::services::platform::always_on_top;
+use nekonetease_platform::services::platform::always_on_top::AlwaysOnTopMethod;
+use nekonetease_ui::{AppWindow, Theme};
+
+/// Armed once the new setting is persisted, read at the very end of `main()` — after the
+/// event loop has exited and every background task wound down. Spawning *before* shutdown
+/// leaves two windows on screen while the old process tears down its runtime.
+static RESPAWN_AFTER_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// Read by `shutdown::respawn_if_requested` once the event loop has returned.
+pub fn should_respawn_after_exit() -> bool {
+    RESPAWN_AFTER_EXIT.load(Ordering::SeqCst)
+}
+
+/// Explicit binary path for the post-exit respawn, set by the auto-updater at
+/// install-success time while the path still resolves to the live binary.
+/// [`respawn_target`] prefers it over asking the OS because an **atomic-swap** install
+/// *renamed* the running binary to `<target>.old` — a move, not an unlink, so
+/// `/proc/self/exe` reports that stale path with a straight face and respawning from it
+/// relaunches the *old* binary, which nothing can recover after the fact. The titlebar and
+/// tray restarts never set this: no install happened, so the OS answer is right.
+static RESPAWN_EXE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Record the binary path to relaunch on exit. The auto-updater calls this on a
+/// successful install with `install_target()` captured *before* the swap.
+pub fn set_respawn_exe(path: PathBuf) {
+    match RESPAWN_EXE.lock() {
+        Ok(mut slot) => *slot = Some(path),
+        Err(_) => log::warn!(
+            "updater: RESPAWN_EXE lock poisoned; \
+             restart may relaunch the wrong binary"
+        ),
+    }
+}
+
+/// The explicit respawn path, if the updater recorded one this session. Private, so no
+/// caller reaches the slot without the fallback that makes an empty one mean "ask the OS".
+fn respawn_exe() -> Option<PathBuf> {
+    RESPAWN_EXE.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// The binary the post-exit respawn should launch: the path the updater recorded before
+/// its install swapped the file, else the running binary's own. `None` only when the OS
+/// refused to say where we are running from, so there is nothing to come back to.
+pub fn respawn_target() -> Option<PathBuf> {
+    if let Some(recorded) = respawn_exe() {
+        return Some(recorded);
+    }
+    match nekonetease_core::utils::exe::current_exe() {
+        Ok(exe) => Some(exe),
+        Err(e) => {
+            log::warn!("respawn: executable lookup failed: {}", describe(&e));
+            None
+        }
+    }
+}
+
+/// Arm the post-exit respawn and quit the event loop — unless there is no binary to come
+/// back to, in which case leave the app running and say so.
+///
+/// All three restart paths go through here because getting the check wrong costs the user
+/// their session: past `quit_event_loop()` the window is gone, and a failed `exec` in the
+/// binary's `shutdown::respawn_if_requested` has nothing to fall back to. Hence resolving
+/// the target *before* the exit. Every caller has persisted its setting by now, so a
+/// refusal still applies on the next manual launch, which is what the toast says.
+pub fn request_respawn_and_quit() {
+    match respawn_target() {
+        Some(exe) if exe.exists() => {}
+        gone => {
+            let reason = gone.map_or_else(
+                || "the executable path is unavailable".to_owned(),
+                |exe| format!("{} no longer exists", exe.display()),
+            );
+            log::warn!("restart: staying up — {reason}");
+            toast::notify(ToastKind::RestartRequired, "");
+            return;
+        }
+    }
+
+    RESPAWN_AFTER_EXIT.store(true, Ordering::SeqCst);
+    if let Err(e) = slint::quit_event_loop() {
+        // Nothing reads the flag while the loop runs, but an ordinary window close later
+        // in the session would, and relaunching out of that is not what was asked for.
+        RESPAWN_AFTER_EXIT.store(false, Ordering::SeqCst);
+        log::warn!("restart: quit_event_loop: {}", describe(&e));
+    }
+}
+
+/// The shown window's native Win32 `HWND`.
+///
+/// `None` until the window has first been shown, and `None` if the active winit backend isn't
+/// Win32 — impossible on a Windows build, but the API surface stays honest.
+///
+/// The two consumers are one layer apart and neither may hold this hop: souvlaki's SMTC attach in
+/// `boot::ui_setup::install`, and `dwm_titlebar` through `ui::appearance::theme_apply`, which the
+/// split keeps off every Slint name. It sat in both for a while, byte-identical, which is what a
+/// private copy of an accessor hop turns into.
+///
+/// Fetched per call rather than cached: Slint's `with_winit_window` accessor only borrows for the
+/// closure's duration.
+#[cfg(target_os = "windows")]
+pub fn win32_hwnd(app: &AppWindow) -> Option<*mut std::ffi::c_void> {
+    use slint::winit_030::WinitWindowAccessor;
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    app.window()
+        .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get() as *mut std::ffi::c_void),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// Hydrate `Theme.use-native-titlebar` from the persisted setting and wire the
+/// `WindowChrome` callbacks. Must run between `AppWindow::new()` and `app.show()`.
+pub fn install(app: &AppWindow, state: &AppState) -> Result<(), AppError> {
+    let settings = nekonetease_app::library::settings::get_settings(&state.paths)?;
+    let use_native = settings.window.use_native_titlebar;
+
+    app.global::<Theme>().set_use_native_titlebar(use_native);
+
+    let press_targets = winit_filter::PressTargets {
+        drag_region: drag_region::wire(app),
+        resize: resize_grab::wire(app),
+    };
+
+    geometry::wire_frame_changes(app);
+    winit_filter::install(app, state, press_targets);
+    controls::wire(app, state);
+    seed_always_on_top(app, state, settings.window.always_on_top);
+
+    Ok(())
+}
+
+/// Push the cached capability and persisted pinned state into `WindowChrome`, and
+/// re-apply at the OS level if the window was pinned last time. Both re-applies wait.
+/// This runs before `app.show()`, and the winit window only exists once the event loop
+/// creates it, so the native one waits for that. The Linux one waits so `KWin` / GNOME
+/// have registered the window: `MakeAbove` against a not-yet-shown one quietly fails on
+/// bare `window-calls`. On Linux it then watches for the pin moving outside NekoNetease,
+/// pinned or not.
+fn seed_always_on_top(app: &AppWindow, state: &AppState, persisted_pinned: bool) {
+    let chrome = app.global::<nekonetease_ui::WindowChrome>();
+    chrome.set_always_on_top_supported(state.always_on_top.supported);
+    chrome.set_always_on_top_active(persisted_pinned);
+
+    if !state.always_on_top.supported {
+        return;
+    }
+
+    match state.always_on_top.method {
+        AlwaysOnTopMethod::Native => {
+            if !persisted_pinned {
+                return;
+            }
+            let weak = app.as_weak();
+            if let Err(e) = slint::spawn_local(async move {
+                let Some(ui) = weak.upgrade() else { return };
+                match ui.window().winit_window().await {
+                    Ok(window) => window.set_window_level(WindowLevel::AlwaysOnTop),
+                    Err(e) => log::warn!("startup always_on_top re-apply: {}", describe(&e)),
+                }
+            }) {
+                log::warn!("startup always_on_top re-apply: schedule: {}", describe(&e));
+            }
+        }
+        #[cfg(target_os = "linux")]
+        AlwaysOnTopMethod::KwinDbus | AlwaysOnTopMethod::GnomeExtension => {
+            let (reports, reported) = tokio::sync::watch::channel(persisted_pinned);
+            follow_reported_pin(app, state, reported);
+
+            let state = state.clone();
+            // `Handle::clone()` releases the borrow on `state.runtime` so the same
+            // `state` can be moved into the async block.
+            state.runtime.clone().spawn(async move {
+                let method = state.always_on_top.method;
+                let data_dir = &state.paths.data_dir;
+                if persisted_pinned {
+                    // KWin enumerates `workspace.stackingOrder` by PID, so the window has to
+                    // be mapped by the compositor first.
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    if let Err(e) = always_on_top::apply(method, data_dir, true).await {
+                        log::warn!("startup always_on_top re-apply: {}", describe(&e));
+                    }
+                }
+                if let Err(e) = always_on_top::watch_changes(method, data_dir, reports).await {
+                    log::warn!("always_on_top watch: {}", describe(&e));
+                }
+            });
+        }
+        AlwaysOnTopMethod::Unsupported => {}
+    }
+}
+
+/// Mirror each pin the window manager reports into `WindowChrome` and the persisted setting, so
+/// `KWin`'s keep-above titlebar button moves NekoNetease's pin button too. A report matching the
+/// button is a toggle of NekoNetease's own coming back, and changes nothing.
+#[cfg(target_os = "linux")]
+fn follow_reported_pin(
+    app: &AppWindow,
+    state: &AppState,
+    mut reported: tokio::sync::watch::Receiver<bool>,
+) {
+    let weak = app.as_weak();
+    let state = state.clone();
+    // One loop, so a burst of reports persists in the order the window manager sent them.
+    let followed = slint::spawn_local(async_compat::Compat::new(async move {
+        while reported.changed().await.is_ok() {
+            let pinned = *reported.borrow();
+            {
+                let Some(ui) = weak.upgrade() else { return };
+                let chrome = ui.global::<nekonetease_ui::WindowChrome>();
+                if chrome.get_always_on_top_active() == pinned {
+                    continue;
+                }
+                chrome.set_always_on_top_active(pinned);
+            }
+            if let Err(e) =
+                nekonetease_app::library::window::record_always_on_top(&state.paths, pinned).await
+            {
+                log::warn!("record always_on_top: {}", describe(&e));
+            }
+        }
+    }));
+    if let Err(e) = followed {
+        log::warn!("always_on_top follower: spawn_local: {}", describe(&e));
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/always_on_top_tests.rs"]
+mod always_on_top_tests;
+#[cfg(test)]
+#[path = "tests/respawn_tests.rs"]
+mod tests;

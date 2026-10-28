@@ -1,0 +1,118 @@
+import { QueueRow } from "../models.slint";
+
+// The two surfaces rendering the play queue — the bottom-sheet inspector and the Up Next
+// list inside Now Playing. Same rows, deliberately separate lifecycles.
+
+// The bottom-sheet inspector. Rust owns the `rows` model and writes both it and
+// `current-index` from a subscriber on the same `sinks.queue` watch `Player.queue` reads.
+//
+// **The drag plumbing is bespoke rather than `DragArea` / `DropArea`** — `queue-row-item.slint`
+// says why. The sheet flips `drag-source`/`drop-slot` from row-level `pointer-event` handlers and
+// fires `reorder` on pointer-up only; both clear out from under a drag the pressed row can no
+// longer finish — Rust on a `rows` rebuild, the sheet on either `open` transition and at mount.
+//
+// `open` is mirrored to a Rust atomic through `open-changed`, which the winit `DroppedFile` filter
+// consults before forwarding paths; a global can't watch its own property.
+export global Queue {
+    in-out property <[QueueRow]> rows;
+    // -1 when nothing is playing. Rows derive `playing: idx == current-index`, so the
+    // highlight flips without a model rewrite.
+    in property <int> current-index: -1;
+    // A Slint expression can't iterate a model, so Rust maintains this for the header's label.
+    in property <int> selected-count: 0;
+    // The same selection as a batch payload for the row context menu, **deduped by track id and
+    // in display order**. Deliberately not `selected-count`'s length: a queue may hold one track
+    // twice and the shadow keys selection by id, so selecting either instance marks both — an
+    // undeduped list would add that track to a playlist twice. The menu counts rows and acts on
+    // ids, which is why both properties exist.
+    in property <[int]> selected-ids;
+    // The close animation outlives `open == false`, so the sheet never gates on `if Queue.open`.
+    in-out property <bool> open;
+    // -1 when idle, else the play-order index being dragged.
+    in-out property <int> drag-source: -1;
+    // Where the dragged row would land, in `[0, rows.length]`. **Slot semantics, not row-index**:
+    // slot K is the *gap* between rows K-1 and K, which is what makes the two neighbouring slots
+    // recognisable no-ops the sheet hides. -1 is no candidate.
+    in-out property <int> drop-slot: -1;
+    // Mirrored from Rust on an OS file-hover for the drop banner, gated in markup on
+    // `is-drop-hovered && open`. Wayland needs the vendored winit patch.
+    in property <bool> is-drop-hovered: false;
+
+    // Lazy row cover against the sheet's *own* tier, so closing releases every buffer. That tier
+    // borrows what the row tier already holds, so a cover the track lists draw is one buffer.
+    // **`generation` does two jobs**: reading it makes the binding depend on the counter, a `pure`
+    // callback's result being cached until a dependency is dirtied; its *value* is whether the tier
+    // is warm. The sheet can't prewarm-then-set, its rows having to land synchronously for the
+    // slide-up to have text on frame one — so at 0 the lookup is cache-only. Closing rewinds to 0.
+    pure callback request-cover(/* artwork-path */ string, /* generation */ int) -> image;
+    in property <int> covers-generation: 0;
+
+    // Fires on pointer-up only once the drag passed the 4 px click threshold.
+    callback reorder(int /*from*/, int /*to*/);
+    callback remove(int /*play_order_index*/);
+    // Reads the `selected` bit off the Rust-side shadow for the batch indices.
+    callback remove-selected();
+    callback skip-to(int /*play_order_index*/);
+    callback clear-queue();
+    // Close-side effects, so the sheet can close without coupling to the `open-changed` atomic.
+    callback close();
+    // The close triple every dismiss site spells. A `public function` rather than a body on
+    // `close()`: that callback has a single handler slot, which Rust's `on_close` claims, so a
+    // default body here would be installed at construction and then silently replaced.
+    public function dismiss() {
+        self.close();
+        self.open = false;
+        self.clear-selection();
+    }
+    // Plain replaces, ctrl toggles, shift extends; the anchor lives in Rust.
+    callback toggle-select(int /*idx*/, bool /*ctrl*/, bool /*shift*/);
+    callback clear-selection();
+    callback select-all();
+
+    // The `Tracks.toggle-row-favorite` contract, batch-shaped like it: Rust persists, flips the
+    // in-memory bit on every matching queue track and on `current_track`, then re-emits. The
+    // hover heart passes one id; the context menu passes the selection.
+    callback toggle-row-favorite([int] /*track_ids*/, bool /*new*/);
+
+    // The row menu's cross-tab entries. Wired in `ui::callbacks::cross_tab_nav` alongside the
+    // nine track-list globals; the sheet dismisses itself before invoking, a navigation with the
+    // queue still up landing behind it.
+    callback go-to-album(int /*album_id*/);
+    callback go-to-artist(int /*artist_id*/);
+    callback go-to-genre(int /*genre_id*/);
+
+    callback open-changed(bool);
+}
+
+// The "Up Next" list inside Now Playing. Its own global rather than more fields on the
+// already-monolithic `Player`, with the same Rust-owned-model shape as `Queue`.
+export global NowPlaying {
+    // The next N tracks in play order, current excluded. Rust does the wrap-around slicing.
+    in-out property <[QueueRow]> up-next-rows;
+
+    // The `RowCovers` contract once more. No generation counter, unlike `Queue`'s — nothing
+    // warms this tier behind the list's back.
+    pure callback request-cover(/* artwork-path */ string) -> image;
+
+    // Play-order index of `up-next-rows[0]`, i.e. current + 1.
+    in property <int> base-index: 0;
+
+    // Under repeat-all the list wraps past the end of the queue, so a row's real play-order
+    // index is `mod(base-index + idx, queue-length)`.
+    in property <int> queue-length: 0;
+
+    // Drives the one-shot Up Next slide; anything at or past `slide-frames` is at rest. Reset to 0
+    // **only** on a real current-track change, not on a reorder keeping the same track. On the
+    // global so the reset lands on the *same* render as the model swap — through a `changed`
+    // handler it queues to the next iteration and paints the post-advance list at rest once first.
+    in-out property <int> slide-phase: 18;
+
+    // 1 = advanced forward, -1 = rewound. Written **before** `slide-phase` is reset, so one
+    // render picks up both.
+    in-out property <int> slide-direction: 1;
+
+    // The transient row rendered alongside the list for the length of the slide. Rust leaves
+    // `outgoing-visible` false when there's nothing to render, as on skip-to and queue rebuild.
+    in-out property <QueueRow> outgoing-row;
+    in-out property <bool> outgoing-visible: false;
+}

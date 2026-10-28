@@ -1,0 +1,124 @@
+import { Theme } from "../../theme.slint";
+import { Favorites } from "../../globals/curated.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { CloudPlaylistTracks } from "../my-library/cloud-playlist-tracks.slint";
+
+// The account's uploaded cloud disk. It reuses the shared cloud row projection and exact remote
+// IDs, so playback and the context menu behave exactly as they do on a cloud playlist.
+export component CloudFavoritesDiskTab inherits Rectangle {
+    VerticalLayout {
+        padding-top: Theme.pad-md;
+        spacing: Theme.pad-sm;
+
+        if Favorites.cloud-disk-error != "": HorizontalLayout {
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            spacing: Theme.pad-md;
+            Text {
+                text: Favorites.cloud-disk-error;
+                color: Theme.subtext0;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Retry");
+                    enabled: !Favorites.cloud-disk-loading;
+                    clicked => { Favorites.retry-cloud-disk(); }
+                }
+            }
+        }
+
+        // Read-only: the mapping is computed over the rows already loaded and marks them. It
+        // writes nothing to either side, which is why it needs no confirmation step.
+        HorizontalLayout {
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            spacing: Theme.pad-md;
+            ActionPill {
+                PillButton {
+                    icon: "swap_horiz";
+                    text: @tr("Find local copies");
+                    enabled: !Favorites.cloud-disk-matching && !Favorites.cloud-disk-loading;
+                    clicked => { Favorites.match-cloud-disk(); }
+                }
+            }
+            if Favorites.cloud-disk-matching: Text {
+                text: @tr("Matching…");
+                color: Theme.subtext0;
+                vertical-alignment: center;
+            }
+            if !Favorites.cloud-disk-matching && Favorites.cloud-disk-match-error != "": Text {
+                text: Favorites.cloud-disk-match-error;
+                color: Theme.subtext0;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            if !Favorites.cloud-disk-matching && Favorites.cloud-disk-match-error == ""
+                && Favorites.cloud-disk-matched-count >= 0: Text {
+                text: @tr("{} of {} matched", Favorites.cloud-disk-matched-count, Favorites.cloud-disk-match-total);
+                color: Theme.subtext0;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+        }
+
+        panel := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            disk-list := CloudPlaylistTracks {
+                width: 100%;
+                height: 100%;
+                rows: Favorites.cloud-disk-tracks;
+                columns <=> Favorites.track-columns;
+                sort-field: "track_number";
+                sort-dir: "asc";
+                position-field: "track_number";
+                show-number: true;
+                sortable: false;
+                favorite-clickable: true;
+                cloud-entity-links: true;
+                play-track(id, index) => { Favorites.play-cloud-row(id, index); }
+                toggle-favorite(id, liked) => { Favorites.toggle-cloud-favorite(id, liked); }
+                request-blur-search => { Favorites.blur-search-tick += 1; }
+            }
+
+            if Favorites.cloud-disk-loading && Favorites.cloud-disk-count < 0: Text {
+                x: Theme.pad-lg;
+                y: disk-list.body-y + Theme.pad-lg;
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+            }
+
+            if !Favorites.cloud-disk-loading && Favorites.cloud-disk-error == ""
+                && Favorites.cloud-disk-count >= 0 && Favorites.cloud-disk-tracks.length == 0
+                && !Favorites.cloud-disk-has-more: Text {
+                x: Theme.pad-lg;
+                y: disk-list.body-y + Theme.pad-lg;
+                text: Favorites.filter == ""
+                    ? @tr("No cloud disk songs yet")
+                    : @tr("No results found");
+                color: Theme.subtext0;
+            }
+        }
+
+        if Favorites.cloud-disk-loading-more: Text {
+            x: Theme.pad-lg;
+            text: @tr("Loading…");
+            color: Theme.subtext0;
+        }
+
+        if Favorites.cloud-disk-has-more && !Favorites.cloud-disk-loading-more
+            && Favorites.cloud-disk-error == "": ActionPill {
+            PillButton {
+                icon: "expand_more";
+                text: @tr("More");
+                enabled: !Favorites.cloud-disk-loading;
+                clicked => { Favorites.load-more-cloud-disk(); }
+            }
+        }
+    }
+}

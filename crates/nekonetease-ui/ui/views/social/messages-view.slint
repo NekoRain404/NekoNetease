@@ -1,0 +1,373 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Social } from "../../globals/social.slint";
+import { ArtworkImage } from "../../components/artwork-image.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { PillButton } from "../../components/action-pill.slint";
+import { IconButton } from "../../components/icon-button.slint";
+import { TooltipSide } from "../../components/tooltip.slint";
+
+// Conversations on the left, the selected exchange on the right.
+//
+// Both lists page. A conversation's row is the whole selector, so the pane only ever shows the
+// peer Rust last resolved — there is no local selection state to drift from the global.
+export component SocialMessagesView inherits Rectangle {
+    background: transparent;
+
+    // The card's own width, not the window's: this surface is inset from the shell, and the split
+    // is a question about the room these two panes actually get. 540 leaves the list its preferred
+    // 280 plus the `pad-md` gap and the thread ~248, where its header and a from-me bubble fit.
+    property <length> two-pane-min-width: 540px;
+    property <bool> two-pane: root.width >= root.two-pane-min-width;
+    // One pane only: which one faces. A pick puts the thread in front and Back returns to the
+    // list; the selection itself is `Social.peer-user-id`, so neither press nor a resize writes it.
+    property <bool> list-front: false;
+    property <bool> thread-front: Social.messages-thread-front(
+        Social.peer-user-id != "", root.list-front);
+
+    HorizontalLayout {
+        spacing: Theme.pad-md;
+
+        // Conversation list. Preferred rather than fixed: the card can be narrower than the
+        // pane's ideal width. Below the breakpoint it is the only pane and fills the card.
+        if root.two-pane || !root.thread-front: Rectangle {
+            preferred-width: 280px;
+            min-width: 132px;
+            horizontal-stretch: root.two-pane ? 0.0 : 1.0;
+            background: Theme.surface0;
+            border-radius: Theme.radius-md;
+            clip: true;
+
+            VerticalLayout {
+                padding: Theme.pad-sm;
+                spacing: Theme.pad-xs;
+
+                Text {
+                    text: @tr("Messages");
+                    color: Theme.text;
+                    font-size: Theme.font-size-md;
+                    font-weight: 600;
+                }
+
+                if Social.conversations-loading && Social.conversations.length == 0: Text {
+                    text: @tr("Loading…");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+
+                if Social.conversations-error != "": VerticalLayout {
+                    spacing: Theme.pad-xs;
+
+                    Text {
+                        text: Social.conversations-error;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        wrap: word-wrap;
+                    }
+
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        clicked => { Social.retry(); }
+                    }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+
+                    conversations := ListView {
+                        x: 0;
+                        y: 0;
+                        width: parent.width - Theme.scrollbar-slot;
+                        height: parent.height;
+                        viewport-width: self.width;
+                        horizontal-scrollbar-policy: always-off;
+                        vertical-scrollbar-policy: always-off;
+
+                        for conversation in Social.conversations: Rectangle {
+                            height: 60px;
+                            border-radius: Theme.radius-sm;
+                            background: conversation.peer-id == Social.peer-user-id
+                                ? Theme.surface1 : transparent;
+
+                            HorizontalLayout {
+                                padding: Theme.pad-xs;
+                                spacing: Theme.pad-sm;
+                                alignment: start;
+
+                                ArtworkImage {
+                                    tile-size: 36px;
+                                    tile-radius: 18px;
+                                    artwork-path: conversation.avatar-path;
+                                    has-cover: conversation.avatar-path != "";
+                                    cover: Social.request-cover(
+                                        conversation.avatar-path, Social.remote-covers-generation,
+                                    );
+                                    fallback-icon: "person";
+                                }
+
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 1px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: conversation.nickname;
+                                        color: Theme.text;
+                                        font-size: Theme.font-size-sm;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        text: conversation.from-me
+                                            ? @tr("You: {}", conversation.last-message)
+                                            : conversation.last-message;
+                                        color: Theme.subtext0;
+                                        font-size: Theme.font-size-sm;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                if conversation.unread > 0: Rectangle {
+                                    width: 18px;
+                                    height: 18px;
+                                    border-radius: 9px;
+                                    background: Theme.accent;
+
+                                    Text {
+                                        text: "\{conversation.unread}";
+                                        color: Theme.accent-text;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            TouchArea {
+                                x: 0;
+                                y: 0;
+                                width: 100%;
+                                height: 100%;
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.list-front = false;
+                                    Social.open-conversation(conversation.peer-id);
+                                }
+                            }
+                        }
+                    }
+
+                    OverlayScrollbar {
+                        horizontal: false;
+                        x: parent.width - self.width;
+                        y: 0;
+                        width: Theme.scrollbar-slot;
+                        height: parent.height;
+                        track-color: Theme.scrollbar-track-on-card;
+                        visible-size: conversations.visible-height;
+                        content-size: conversations.viewport-height;
+                        offset: -conversations.viewport-y;
+                        scroll-to(o) => { conversations.viewport-y = -o; }
+                    }
+
+                    if !Social.conversations-loading && Social.conversations-error == ""
+                        && Social.conversations.length == 0: Text {
+                        text: @tr("No conversations yet");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+
+                if Social.conversations-has-more: PillButton {
+                    text: Social.conversations-loading-more ? @tr("Loading…") : @tr("More conversations");
+                    enabled: !Social.conversations-loading-more;
+                    clicked => { Social.load-more-conversations(); }
+                }
+            }
+        }
+
+        // The exchange.
+        if root.two-pane || root.thread-front: Rectangle {
+            horizontal-stretch: 1;
+            background: Theme.surface0;
+            border-radius: Theme.radius-md;
+            clip: true;
+
+            if Social.peer-user-id == "": GridEmptyState {
+                icon: "chat";
+                title: @tr("Pick a conversation");
+                body: @tr("Private messages are read-only here.");
+            }
+
+            if Social.peer-user-id != "": VerticalLayout {
+                padding: Theme.pad-sm;
+                spacing: Theme.pad-xs;
+
+                HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    alignment: start;
+
+                    // Below the breakpoint the list is a pane away rather than beside, so Back
+                    // returns to it without dropping the peer. `below` because the card clips and
+                    // a pill above the header would be cut.
+                    if !root.two-pane: IconButton {
+                        icon: "arrow_back";
+                        tooltip-text: @tr("Back");
+                        tooltip-side: TooltipSide.below;
+                        diameter: 32px;
+                        icon-size: 20px;
+                        clicked => { root.list-front = true; }
+                    }
+
+                    // The avatar steps aside below the breakpoint: Back takes the leading slot and
+                    // the name needs what is left at the card's floor.
+                    if root.two-pane: ArtworkImage {
+                        tile-size: 32px;
+                        tile-radius: 16px;
+                        artwork-path: Social.peer-avatar-path;
+                        has-cover: Social.peer-avatar-path != "";
+                        cover: Social.request-cover(
+                            Social.peer-avatar-path, Social.remote-covers-generation,
+                        );
+                        fallback-icon: "person";
+                    }
+
+                    Text {
+                        text: Social.peer-name;
+                        color: Theme.text;
+                        font-size: Theme.font-size-md;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+
+                    PillButton {
+                        icon: "person";
+                        text: @tr("Profile");
+                        clicked => { Social.open-user(Social.peer-user-id); }
+                    }
+                }
+
+                if Social.messages-error != "": VerticalLayout {
+                    spacing: Theme.pad-xs;
+
+                    Text {
+                        text: Social.messages-error;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        wrap: word-wrap;
+                    }
+
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        clicked => { Social.retry(); }
+                    }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+
+                    messages := ListView {
+                        x: 0;
+                        y: 0;
+                        width: parent.width - Theme.scrollbar-slot;
+                        height: parent.height;
+                        viewport-width: self.width;
+                        horizontal-scrollbar-policy: always-off;
+                        vertical-scrollbar-policy: always-off;
+
+                        for message in Social.messages: Rectangle {
+                            height: bubble-content.preferred-height
+                                + Theme.pad-sm * 2 + Theme.pad-xs * 2;
+
+                            HorizontalLayout {
+                                padding-left: message.from-me ? 48px : 0px;
+                                padding-right: message.from-me ? 0px : 48px;
+                                padding-top: Theme.pad-xs;
+                                padding-bottom: Theme.pad-xs;
+                                alignment: message.from-me ? end : start;
+
+                                Rectangle {
+                                    width: min(420px, parent.width - 16px);
+                                    border-radius: Theme.radius-md;
+                                    background: message.from-me
+                                        ? Theme.accent.with-alpha(0.18)
+                                        : Theme.surface1;
+
+                                    bubble-content := VerticalLayout {
+                                        padding: Theme.pad-sm;
+                                        spacing: 2px;
+
+                                        HorizontalLayout {
+                                            spacing: Theme.pad-xs;
+
+                                            Text {
+                                                text: message.author;
+                                                color: Theme.subtext0;
+                                                font-size: Theme.font-size-sm;
+                                                horizontal-stretch: 1;
+                                                overflow: elide;
+                                            }
+
+                                            Text {
+                                                text: message.display-time;
+                                                color: Theme.overlay1;
+                                                font-size: Theme.font-size-sm;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: message.content;
+                                            color: Theme.text;
+                                            font-size: Theme.font-size-md;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    OverlayScrollbar {
+                        horizontal: false;
+                        x: parent.width - self.width;
+                        y: 0;
+                        width: Theme.scrollbar-slot;
+                        height: parent.height;
+                        track-color: Theme.scrollbar-track-on-card;
+                        visible-size: messages.visible-height;
+                        content-size: messages.viewport-height;
+                        offset: -messages.viewport-y;
+                        scroll-to(o) => { messages.viewport-y = -o; }
+                    }
+
+                    if Social.messages-loading && Social.messages.length == 0: Text {
+                        text: @tr("Loading…");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+
+                    if !Social.messages-loading && Social.messages-error == ""
+                        && Social.messages.length == 0: GridEmptyState {
+                        icon: "chat";
+                        title: @tr("No messages yet");
+                        body: @tr("This conversation is empty.");
+                    }
+                }
+
+                if Social.messages-has-more: PillButton {
+                    text: Social.messages-loading-more ? @tr("Loading…") : @tr("Older messages");
+                    enabled: !Social.messages-loading-more;
+                    clicked => { Social.load-more-messages(); }
+                }
+            }
+        }
+    }
+}

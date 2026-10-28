@@ -1,0 +1,31 @@
+import { Nav } from "../globals/nav.slint";
+
+// "Is this sidebar section the one on screen?", as a reusable gate driving each section's Rust
+// hook. The predicate is identical every time: this nav index is selected, and neither of the two
+// things that mount *over* a section — Now Playing and the miniplayer — is up.
+//
+// **The host mounts this rather than each view watching itself**: the leaving edge is the one that
+// matters and a view cannot observe its own, Slint destroying it with no unmount callback.
+export component SectionActiveGate {
+    // The section's `Nav.selected-index` value.
+    in property <int> index;
+    // Passed in rather than read off the `MiniPlayer` global: the host derives it from the window
+    // size a beat before the global is written, and the gate must not lag that.
+    in property <bool> mini-active;
+    // A section built out of tabs may answer a second question — is *this* tab mounted — so that
+    // leaving a tab is the same event as leaving the section. `-1` on both is "no tabs", which
+    // every other mount takes by omission.
+    //
+    // **Per-tab is My Library's shape.** Its five tabs share one sidebar section but keep separate
+    // hooks; Favorites can answer from its shared handle, and Recently Played has no tab switch.
+    in property <int> tab-index: -1;
+    in property <int> current-tab: -1;
+
+    // Fires on every transition, with the new value.
+    callback active-changed(bool);
+
+    private property <bool> watched:
+        Nav.selected-index == root.index && !Nav.now-playing-open && !root.mini-active
+        && (root.tab-index < 0 || root.tab-index == root.current-tab);
+    changed watched => { root.active-changed(root.watched); }
+}

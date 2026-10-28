@@ -1,0 +1,138 @@
+[package]
+# Lowercase, against the artifact being `NekoNetease`: `-p nekonetease` and
+# `cargo wix --package nekonetease` want a name nobody has to remember the case of,
+# and `[[bin]]` below is what keeps the file itself spelled the way every
+# download URL, `.desktop` Exec= line and MSI registry key already is.
+name = "nekonetease"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Cross-platform desktop music player (Slint + Rust)"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors = ["NekoRain"]
+keywords = ["music", "player", "audio", "slint"]
+categories = ["multimedia::audio"]
+# `nekonetease-ui` is depended on by path with no version, so a publish could never work.
+publish = false
+
+# The artifact name is load-bearing and is not the package name: `target/release/NekoNetease`
+# is spelled in the three packaging scripts and `release.yml`'s BINARY, and
+# `wix/main.wxs`'s `NekoNetease.exe` File, RestartResource and
+# `HKLM\Software\Classes\Applications\NekoNetease.exe` keys — which are what an in-place MSI
+# upgrade matches on, so a rename strands the file associations of everyone already
+# installed. `path` is required rather than inferable: cargo only guesses `src/main.rs`
+# for a bin named after its package.
+[[bin]]
+name = "NekoNetease"
+path = "src/main.rs"
+
+# Drives the `.deb` in release CI; the polkit helper and policy are what
+# `updater/install/swap.rs` looks for at `/usr/libexec/nekonetease-update-helper`. Dest
+# paths follow the Debian FHS and match the RPM `%files` layout, except licences:
+# Policy 12.5 wants `/usr/share/doc/<pkg>/copyright` and Debian has no
+# `/usr/share/licenses`, while RPM's `%license` tag survives `--excludedocs`.
+[package.metadata.deb]
+section = "sound"
+priority = "optional"
+# Copied verbatim only because it opens with DEP-5 keys (cargo-deb reads the first
+# ten lines); otherwise it prepends a generated header declaring one author and a
+# whole-package AGPL, which the fonts, winit and the four copyleft crates falsify. Bare string,
+# not the `[path, skip-lines]` pair: that is a `Vec<String>`, so a `0` won't parse.
+license-file = "../../packaging/debian-copyright"
+# `$auto` keeps the detected shared-library deps. `policykit-1` is transitional in
+# Trixie, so apt takes `pkexec` there and falls back on Bookworm and older Ubuntu.
+depends = "$auto, pkexec | policykit-1"
+# Not `depends`: both ship `debian/triggers` on the two cache directories, so dpkg
+# refreshes them per transaction and a server install that skips them is a no-op.
+recommends = "desktop-file-utils, hicolor-icon-theme"
+extended-description = """
+NekoNetease is a modern, local-first desktop music player with a Material
+3-inspired interface. Your music collection lives entirely on your own
+machine, and its optional online lyrics lookup ships switched off. It pairs a
+Slint user interface with a pure-Rust backend: gapless playback via
+Symphonia and cpal (MP3, FLAC, M4A/M4B with AAC and ALAC, Ogg Vorbis,
+Opus, WAV, AIFF/AIFF-C, Matroska and CAF), a fast local SQLite library with
+full-text search, browsing by album, artist, genre and playlist, OS
+media controls (MPRIS), and pluggable themes including system light/dark
+and Material You."""
+# The reverse-DNS dest names match the AppStream component id, which is what makes
+# Discover / GNOME Software merge the desktop entry with the MetaInfo component.
+#
+# Every source but the first is `../../`, this manifest sitting two below the repo root
+# and each input staying beside the other packaging sources. The first is *not* an
+# oversight: `target/release/` is a magic literal cargo-deb strips off the string before
+# joining any root (`config.rs`'s `strip_prefix("target/release")`), then resolves against
+# the real target dir, which `--target` moves. Given a `../../` it would stop matching and
+# the binary would be looked for as an ordinary file that no build has put there.
+assets = [
+    ["target/release/NekoNetease", "usr/bin/nekonetease", "755"],
+    ["../../scripts/NekoNetease.desktop", "usr/share/applications/com.github.helpmeeadice.nekonetease.desktop", "644"],
+    ["../../packaging/com.github.helpmeeadice.nekonetease.metainfo.xml", "usr/share/metainfo/com.github.helpmeeadice.nekonetease.metainfo.xml", "644"],
+    ["../../assets/icons/nekonetease.png", "usr/share/icons/hicolor/256x256/apps/nekonetease.png", "644"],
+    ["../../LICENSE", "usr/share/doc/nekonetease/LICENSE", "644"],
+    # The fonts, the vendored winit and the crates on copyleft terms all compile into
+    # the binary, so this package owes their licence text. Globbed, so a new file needs
+    # no edit here, unlike `wix/main.wxs`, which has to name each one.
+    ["../../licenses/*", "usr/share/doc/nekonetease/licenses/", "644"],
+    ["../../packaging/nekonetease-update-helper", "usr/libexec/nekonetease-update-helper", "755"],
+    ["../../packaging/com.github.helpmeeadice.nekonetease.update.policy", "usr/share/polkit-1/actions/com.github.helpmeeadice.nekonetease.update.policy", "644"],
+]
+
+[dependencies]
+# The generated Slint types `main.rs` and `boot/` name directly.
+nekonetease-ui = { path = "../nekonetease-ui" }
+# The UI layer, whose `ui` module is what `boot/` wires.
+nekonetease-views = { path = "../nekonetease-views" }
+# The seven the binary itself spells. `nekonetease-net` is absent because nothing here
+# opens a socket, and `nekonetease-audio` and `nekonetease-playback` are dev-dependencies
+# below: only `tests/` reaches under the DSP chain.
+nekonetease-core = { path = "../nekonetease-core" }
+nekonetease-artwork = { path = "../nekonetease-artwork" }
+nekonetease-platform = { path = "../nekonetease-platform" }
+nekonetease-engine = { path = "../nekonetease-engine" }
+nekonetease-store = { path = "../nekonetease-store" }
+nekonetease-integrations = { path = "../nekonetease-integrations" }
+nekonetease-app = { path = "../nekonetease-app" }
+
+# What the binary itself draws with, once views owns the fifteen the UI layer
+# needs: the renderer it builds a window from, the runtime the UI thread bridges
+# onto, and the bridge. Nothing here is named by a crate above — a dependency this
+# package no longer spells is one it no longer compiles.
+slint.workspace = true
+tokio.workspace = true
+async-compat.workspace = true
+log.workspace = true
+# Only to shape rayon's global pool before its first use, which nothing later can.
+rayon.workspace = true
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+nekonetease-testkit = { path = "../nekonetease-testkit" }
+# `crossfade`, `stream_rate` and `common/` drive the two lower audio tiers directly,
+# which is the only thing in this package that reaches below `nekonetease-engine`.
+nekonetease-audio = { path = "../nekonetease-audio" }
+nekonetease-playback = { path = "../nekonetease-playback" }
+tempfile.workspace = true
+# The rules pin asks whether each `.claude/rules` `paths:` entry still matches anything, and half
+# of them are globs. Hand-rolling `**` inside the one test that exists to catch silent drift is
+# the wrong place to be clever.
+glob.workspace = true
+# `tests/cross_tier.rs` reads `pragma_table_info` off a `test_pool`, which is the
+# only place this package touches the database directly.
+sqlx.workspace = true
+# `tests/translations.rs` asks the bundled faces whether they carry every character a
+# catalogue sets.
+ttf-parser.workspace = true
+# The same file derives the decomposed spellings of each alphabet the font build merges, as
+# `scripts/patch_vazirmatn.py` asks `unicodedata` for them.
+unicode-normalization.workspace = true
+
+# Workspace-level and inherited by every package, so no member can sit outside the
+# gate; `nekonetease-ui`'s generated module carries a blanket `#[allow]`.
+[lints]
+workspace = true

@@ -1,0 +1,67 @@
+import { Theme } from "../../theme.slint";
+import { CloudAccount } from "../../settings.slint";
+import { LabeledInput } from "../../components/labeled-input.slint";
+import { SectionButton } from "../../components/settings/section-button.slint";
+
+// Phone + SMS-code sign-in. The countdown lives in Rust, so it keeps running when the
+// form is unmounted by a login-mode switch or by the session arriving.
+export component NeteaseCaptchaForm inherits VerticalLayout {
+    in-out property <string> phone;
+    in-out property <string> country-code: "86";
+    in-out property <string> captcha;
+
+    spacing: Theme.pad-sm;
+
+    LabeledInput {
+        label: @tr("Country code");
+        placeholder: "86";
+        text <=> root.country-code;
+    }
+    LabeledInput {
+        label: @tr("Phone number");
+        placeholder: @tr("Enter your phone number");
+        text <=> root.phone;
+    }
+    HorizontalLayout {
+        spacing: Theme.pad-sm;
+
+        LabeledInput {
+            label: @tr("Verification code");
+            placeholder: @tr("Enter the code we texted you");
+            text <=> root.captcha;
+            horizontal-stretch: 1;
+            accepted => { root.submit(); }
+        }
+
+        VerticalLayout {
+            alignment: end;
+            SectionButton {
+                label: CloudAccount.captcha-cooldown > 0
+                    ? @tr("Resend in {}s", CloudAccount.captcha-cooldown)
+                    : @tr("Send code");
+                primary: false;
+                button-enabled: CloudAccount.captcha-cooldown == 0
+                    && !CloudAccount.captcha-sending && !CloudAccount.busy;
+                clicked => {
+                    CloudAccount.notice = "";
+                    CloudAccount.send-login-captcha(root.phone, root.country-code);
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        SectionButton {
+            label: @tr("Sign in");
+            leading-icon-image: @image-url("../../assets/icons/lucide/log-in.svg");
+            button-enabled: !CloudAccount.busy;
+            clicked => { root.submit(); }
+        }
+    }
+
+    public function submit() {
+        CloudAccount.notice = "";
+        CloudAccount.login-phone-captcha(root.phone, root.country-code, root.captcha);
+        root.captcha = "";
+    }
+}

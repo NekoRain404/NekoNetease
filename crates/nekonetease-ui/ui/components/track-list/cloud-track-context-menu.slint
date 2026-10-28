@@ -1,0 +1,143 @@
+import { TrackListRow } from "../../models.slint";
+import { CloudTrackActions } from "../../globals/cloud-track-actions.slint";
+import { Dialog } from "../../globals/dialog.slint";
+import { Playlists } from "../../globals/playlists.slint";
+import { CopyActions } from "../../globals/copy-actions.slint";
+import { ContextMenuMetrics, FavoriteMenuItem, MenuFlyout, MenuItem, MenuSeparator } from "../context-menu.slint";
+import { TrackCopyFields } from "../track-copy-items.slint";
+import { PopupSurface } from "../popup-surface.slint";
+import { PopupDismissCatcher } from "../popup-dismiss-catcher.slint";
+import { FocusLossWatcher } from "../focus-loss-watcher.slint";
+
+// Same menu chrome as local tracks, with actions that operate on cloud songs.
+export component CloudTrackContextMenu inherits Rectangle {
+    in property <TrackListRow> row-data;
+    in property <length> at-x;
+    in property <length> at-y;
+    callback play();
+    callback toggle-favorite();
+    in property <bool> show-queue-remove: false;
+    callback remove();
+    in property <bool> show-playlist-remove: false;
+    callback remove-from-playlist();
+    in property <bool> show-playlist-reorder: false;
+    callback move-up();
+    callback move-down();
+    property <bool> copy-open;
+
+    x: 0; y: 0; width: 0; height: 0;
+    public function show() { root.copy-open = false; pop.show(); }
+    function dismiss() { root.copy-open = false; pop.close(); }
+
+    pop := PopupWindow {
+        property <length> menu-w: ContextMenuMetrics.menu-w(menu.preferred-width);
+        property <length> menu-h: menu.preferred-height;
+        property <length> flyout-h: ContextMenuMetrics.flyout-h(4);
+        property <length> reserve: ContextMenuMetrics.reserve;
+        property <bool> flyout-left:
+            ContextMenuMetrics.opens-left(root.absolute-position.x + root.at-x, self.menu-w);
+        x: root.at-x - (self.flyout-left ? self.reserve : 0px);
+        y: root.at-y;
+        width: self.menu-w + self.reserve;
+        height: max(self.menu-h, self.flyout-h);
+        close-policy: close-on-click-outside;
+
+        FocusLossWatcher { close => { root.dismiss(); } }
+        PopupDismissCatcher {
+            width: parent.width; height: parent.height;
+            clicked => { root.dismiss(); }
+        }
+        PopupSurface {
+            x: pop.flyout-left ? pop.reserve : 0px;
+            y: 0;
+            width: pop.menu-w;
+            height: pop.menu-h;
+            menu := VerticalLayout {
+                padding: ContextMenuMetrics.inset;
+                spacing: 0;
+                MenuItem {
+                    label: @tr("Play"); icon: "play_arrow";
+                    clicked => { root.play(); root.dismiss(); }
+                }
+                MenuItem {
+                    label: @tr("Play Next"); icon: "queue_play_next";
+                    clicked => {
+                        CloudTrackActions.enqueue(root.row-data.remote_id, true);
+                        root.dismiss();
+                    }
+                }
+                MenuItem {
+                    label: @tr("Add to Queue"); icon: "queue_music";
+                    clicked => {
+                        CloudTrackActions.enqueue(root.row-data.remote_id, false);
+                        root.dismiss();
+                    }
+                }
+                MenuItem {
+                    label: @tr("Add to Playlist"); icon: "playlist_add";
+                    clicked => {
+                        Dialog.prepare-add-to-playlist(@tr("Add to Playlist"));
+                        Playlists.request-add-cloud-tracks([root.row-data.remote_id], -1);
+                        root.dismiss();
+                    }
+                }
+                MenuItem {
+                    label: @tr("Copy link"); icon: "link";
+                    clicked => {
+                        CopyActions.copy-text("https://music.163.com/song?id=" + root.row-data.remote_id);
+                        root.dismiss();
+                    }
+                }
+                MenuSeparator {}
+                FavoriteMenuItem {
+                    is-favorite: root.row-data.is_favorite;
+                    clicked => { root.toggle-favorite(); root.dismiss(); }
+                }
+                MenuSeparator {}
+                copy-row := MenuItem {
+                    label: @tr("Copy"); icon: "content_copy";
+                    submenu: true;
+                    submenu-open: root.copy-open;
+                    submenu-left: pop.flyout-left;
+                    clicked => { root.copy-open = !root.copy-open; }
+                }
+                if root.show-queue-remove || root.show-playlist-remove || root.show-playlist-reorder: MenuSeparator {}
+                if root.show-playlist-reorder: MenuItem {
+                    label: @tr("Move up"); icon: "expand_less";
+                    clicked => { root.move-up(); root.dismiss(); }
+                }
+                if root.show-playlist-reorder: MenuItem {
+                    label: @tr("Move down"); icon: "expand_more";
+                    clicked => { root.move-down(); root.dismiss(); }
+                }
+                if root.show-queue-remove: MenuItem {
+                    label: @tr("Remove from Queue"); icon: "playlist_remove";
+                    clicked => { root.remove(); root.dismiss(); }
+                }
+                if root.show-playlist-remove: MenuItem {
+                    label: @tr("Remove from Playlist"); icon: "playlist_remove";
+                    clicked => { root.remove-from-playlist(); root.dismiss(); }
+                }
+            }
+        }
+        if root.copy-open: MenuFlyout {
+            x: ContextMenuMetrics.flyout-x(pop.flyout-left, pop.menu-w);
+            y: ContextMenuMetrics.flyout-y(copy-row.y, pop.height, pop.flyout-h);
+            height: pop.flyout-h;
+            VerticalLayout {
+                spacing: 0;
+                for entry in [TrackCopyFields.list[0], TrackCopyFields.list[1],
+                              TrackCopyFields.list[2], TrackCopyFields.list[3]]: MenuItem {
+                        label: entry.label; icon: entry.icon;
+                        clicked => {
+                            CopyActions.copy-text(entry.token == "title" ? root.row-data.title
+                                : entry.token == "artist" ? root.row-data.artist
+                                : entry.token == "album" ? root.row-data.album
+                                : root.row-data.artist + " - " + root.row-data.title);
+                            root.dismiss();
+                        }
+                }
+            }
+        }
+    }
+}

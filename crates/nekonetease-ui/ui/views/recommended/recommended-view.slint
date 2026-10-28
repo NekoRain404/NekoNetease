@@ -1,0 +1,169 @@
+import { Theme } from "../../theme.slint";
+import { Recommended } from "../../globals/recommended.slint";
+import { Playlists } from "../../globals/playlists.slint";
+import { Search } from "../../globals/search.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { PlaylistGrid } from "../../components/grid/playlist-grid.slint";
+import { GridGeometry } from "../../components/grid-geometry.slint";
+import { GridColumnsSync } from "../../components/grid-columns-sync.slint";
+import { LibraryEntryCard } from "../my-library/entry-card.slint";
+
+// The account's suggested playlists, in the shape My Library's retired Recommendations category
+// had: the two special playlists as wide cards over the same virtualized playlist grid the
+// library's Playlists tab draws. The special cards call `Playlists.open-special`, which is the
+// door that lands on that tab with the daily or radar detail open.
+export component RecommendedView inherits Rectangle {
+    background: Theme.base;
+
+    property <length> grid-gap: 20px;
+    // Local rather than a global: a fresh visit starts at the top, and the page unmounts on a
+    // section leave.
+    property <length> grid-scroll: 0;
+    property <int> lone-row-cards:
+        Recommended.grid-rows.length == 1 ? Recommended.grid-rows[0].playlists.length : -1;
+
+    geom := GridGeometry {
+        avail-width: root.width;
+        gap: root.grid-gap;
+        lone-row-cards: root.lone-row-cards;
+    }
+
+    GridColumnsSync {
+        computed-cols: geom.cols;
+        seed(c) => {
+            Recommended.columns = c;
+            Recommended.columns-changed(c);
+        }
+    }
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-top: Theme.pad-lg;
+        spacing: Theme.pad-sm;
+
+        HorizontalLayout {
+            height: 34px;
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            Text {
+                text: @tr("Recommended");
+                color: Theme.page-title-color;
+                font-size: Theme.page-title-size;
+                font-weight: Theme.page-title-weight;
+                vertical-alignment: center;
+            }
+        }
+
+        body := VerticalLayout {
+            vertical-stretch: 1;
+            padding-top: Theme.pad-sm;
+            spacing: Theme.pad-md;
+
+            HorizontalLayout {
+                height: 124px;
+                padding-left: Theme.pad-lg;
+                padding-right: Theme.pad-lg + Theme.scrollbar-slot;
+                spacing: Theme.pad-md;
+
+                // Preferred width zeroed so the two halves are equal rather than each card's
+                // text deciding its own share — the titles are different lengths.
+                LibraryEntryCard {
+                    horizontal-stretch: 1;
+                    preferred-width: 0px;
+                    title: @tr("Daily recommendations");
+                    subtitle: @tr("Playlist");
+                    icon: "playlist_play";
+                    activated => { Playlists.open-special(0); }
+                }
+                LibraryEntryCard {
+                    horizontal-stretch: 1;
+                    preferred-width: 0px;
+                    title: @tr("Personal radar");
+                    subtitle: @tr("Playlist");
+                    icon: "auto_awesome";
+                    activated => { Playlists.open-special(1); }
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.pad-lg;
+                padding-right: Theme.pad-lg + Theme.scrollbar-slot;
+                Text {
+                    text: @tr("Recommended playlists");
+                    color: Theme.text;
+                    font-size: Theme.font-size-md;
+                    font-weight: 600;
+                }
+            }
+
+            grid := PlaylistGrid {
+                vertical-stretch: 1;
+                rows: Recommended.grid-rows;
+                card-width: geom.card-w;
+                card-height: geom.card-h;
+                row-height: geom.row-h;
+                gap: root.grid-gap;
+                editable: false;
+                scroll-offset <=> root.grid-scroll;
+                open-playlist(id) => { Search.open-chart(id); }
+                covers-generation: Search.entity-covers-generation;
+                request-cover(p, g) => { Search.request-entity-cover(p, g) }
+            }
+        }
+    }
+
+    if Recommended.loading && Recommended.grid-rows.length == 0: Text {
+        x: Theme.pad-lg;
+        y: grid.absolute-position.y - root.absolute-position.y + Theme.pad-md;
+        text: @tr("Loading…");
+        color: Theme.subtext0;
+        font-size: Theme.font-size-sm;
+    }
+
+    if Recommended.failed: VerticalLayout {
+        x: Theme.pad-lg;
+        y: grid.absolute-position.y - root.absolute-position.y + Theme.pad-md;
+        width: root.width - 2 * Theme.pad-lg - Theme.scrollbar-slot;
+        spacing: Theme.pad-sm;
+        Text {
+            text: @tr("Couldn't load recommendations");
+            color: Theme.subtext0;
+            font-size: Theme.font-size-sm;
+        }
+        ActionPill {
+            PillButton {
+                icon: "refresh";
+                text: @tr("Retry");
+                clicked => { Recommended.retry(); }
+            }
+        }
+    }
+
+    if Recommended.loaded && !Recommended.failed
+        && Recommended.grid-rows.length == 0: GridEmptyState {
+        x: Theme.pad-lg;
+        y: grid.absolute-position.y - root.absolute-position.y;
+        width: root.width - 2 * Theme.pad-lg - Theme.scrollbar-slot;
+        height: grid.height;
+        icon: "queue_music";
+        title: @tr("No playlists to recommend");
+        body: "";
+    }
+
+    OverlayScrollbar {
+        horizontal: false;
+        x: parent.width - self.width;
+        y: grid.absolute-position.y - root.absolute-position.y;
+        width: Theme.scrollbar-slot;
+        height: grid.height;
+        visible-size: grid.v-visible-height;
+        content-size: grid.v-viewport-height;
+        offset: grid.v-offset;
+        scroll-to(o) => { grid.set-v-offset(o); }
+    }
+}

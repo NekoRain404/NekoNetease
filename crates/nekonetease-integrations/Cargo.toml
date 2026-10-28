@@ -1,0 +1,32 @@
+[package]
+name = "nekonetease-integrations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OS media controls for NekoNetease"
+publish = false
+
+[lib]
+doctest = false
+
+# The operating system media controls receive playback state and send transport commands back.
+[dependencies]
+nekonetease-core = { path = "../nekonetease-core" }
+# What is playing, as the state machine publishes it, plus the transport commands that come back.
+nekonetease-engine = { path = "../nekonetease-engine" }
+
+tokio.workspace = true
+tokio-util.workspace = true
+parking_lot.workspace = true
+log.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+souvlaki.workspace = true
+
+[lints]
+workspace = true

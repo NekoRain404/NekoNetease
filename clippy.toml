@@ -1,0 +1,10 @@
+# Overrides `Cargo.toml`'s `rust-version` for clippy — both must move together.
+msrv = "1.99.0"
+
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold   = 8
+too-many-lines-threshold       = 120
+
+# The product name is one camel-case word, so `doc_markdown` reads it as an item needing
+# backticks; `..` keeps clippy's own default identifier list alongside it.
+doc-valid-idents = ["NekoNetease", ".."]

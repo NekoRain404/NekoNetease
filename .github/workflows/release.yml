@@ -1,0 +1,276 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Release-version regression tests
+        run: python3 scripts/test_prepare_release.py
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/cargo-audit
+
+  slint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Compile the Slint unit
+        run: cargo check --locked -p nekonetease-ui
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Lints
+        run: cargo clippy --all-targets --locked --workspace -- -D warnings
+
+  test-linux:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/headless-audio
+      - name: Tests
+        run: cargo test --locked --workspace
+
+  test-windows:
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Tests
+        run: cargo test --locked --workspace
+
+  quality:
+    needs: [fmt, audit, slint, clippy, test-linux, test-windows, sign-preflight]
+    # A skipped `needs:` entry would skip this required check too, and `sign-preflight` is
+    # deliberately skipped where repository secrets cannot exist. Run anyway, then fail on any
+    # real failure rather than on the skip.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: A gated job failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo '${{ toJSON(needs) }}'
+          exit 1
+      - name: Every gated job passed
+        run: echo '${{ toJSON(needs) }}'
+
+  sign-preflight:
+    # Fork and Dependabot pull requests never receive repository secrets, so a preflight that
+    # needs MINISIGN_SECRET_KEY would fail before any real work started. The `quality` aggregate
+    # treats the resulting skip as neutral.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Prove the signing key before a long build
+        run: printf 'preflight\n' > preflight.txt
+      - uses: ./.github/actions/minisign-sign
+        with:
+          files: preflight.txt
+          secret-key: ${{ secrets.MINISIGN_SECRET_KEY }}
+          password: ${{ secrets.MINISIGN_PASSWORD }}
+          trusted-comment: "version=${{ github.ref_name }} preflight=true"
+
+  build:
+    needs: [quality]
+    # `actions/attest-build-provenance` signs a SLSA statement over the packages this slot
+    # produced; the default token has neither permission.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    # A tag push and a published Release both start a release build; pull requests and
+    # manual dispatches run checks only. The release payload names its tag directly, so
+    # that arm reads it there rather than inferring it from `github.ref`.
+    if: (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Prepare the release version
+        id: release
+        env:
+          # Both arms that reach here carry the tag — a push in `github.ref_name`, a published
+          # Release in its payload — and the script rewrites the workspace version for either.
+          GITHUB_EVENT_NAME: release
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: python3 scripts/prepare-release.py
+      - name: Synchronize the workspace versions
+        # The scripts and `cargo deb` read `[workspace.package]`, and `--locked` rejects a
+        # Cargo.lock whose workspace entries still carry the committed version.
+        run: cargo update --workspace
+      - name: Release build
+        run: cargo build --release --locked -p nekonetease
+      - name: Package (Linux)
+        id: package
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ./scripts/build-tarball.sh "dist/nekonetease-v${{ steps.release.outputs.version }}-x86_64-linux.tar.gz"
+          ./scripts/build-appimage.sh "dist/NekoNetease-${{ steps.release.outputs.version }}-x86_64.AppImage"
+          ./scripts/build-rpm.sh
+          cp "$HOME"/rpmbuild/RPMS/x86_64/nekonetease-*.rpm dist/
+          # Exact version: its DEP-5 detection decides whether packaging/debian-copyright
+          # ships verbatim or cargo-deb generates a one-author AGPL header over it.
+          cargo install cargo-deb --version 3.8.0 --locked
+          cargo deb -p nekonetease --locked --no-build
+          # cargo-deb names this `nekonetease_<ver>_amd64.deb`; PLATFORM_PATTERNS keys on
+          # `-x86_64.deb`, and an unclassifiable artifact aborts the manifest build.
+          cp target/debian/nekonetease_*_amd64.deb \
+             "dist/nekonetease-${{ steps.release.outputs.version }}-x86_64.deb"
+          {
+            echo 'files<<PKG'
+            find dist -maxdepth 1 -type f -print
+            echo PKG
+          } >> "$GITHUB_OUTPUT"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $bundle = Join-Path $env:RUNNER_TEMP "NekoNetease"
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $bundle "licenses") | Out-Null
+          Copy-Item -Path "target/release/NekoNetease.exe" -Destination $bundle
+          Copy-Item -Path "LICENSE" -Destination $bundle
+          Copy-Item -Path "licenses/*" -Destination (Join-Path $bundle "licenses") -Recurse
+          Compress-Archive -Path $bundle -DestinationPath "dist/NekoNetease-${{ github.ref_name }}-x86_64-windows.zip"
+      - name: Build MSI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          # WiX ships the dotnet tool against net6.0; windows-latest no longer carries that runtime.
+          DOTNET_ROLL_FORWARD: Major
+        run: |
+          dotnet tool install --global wix --version 4.0.6
+          $dotnetTools = Join-Path $env:USERPROFILE ".dotnet\tools"
+          $dotnetTools | Out-File -FilePath $env:GITHUB_PATH -Append
+          $env:PATH = "$dotnetTools;$env:PATH"
+          # crates.io's 0.3.9 predates v4 support, and main.wxs is a v4 source.
+          cargo install --git https://github.com/volks73/cargo-wix --rev 9a8ed9486637e1fb839f209730eda6c95fd12d88 --locked
+          cargo wix --package nekonetease --no-build --toolset modern --migrate global
+          $msi = Get-ChildItem -Path "target/wix" -Filter "*.msi" | Select-Object -First 1
+          if (-not $msi) { throw "cargo wix produced no MSI under target/wix" }
+          Copy-Item -Path $msi.FullName -Destination "dist/NekoNetease-${{ github.ref_name }}-x86_64.msi"
+      - name: Sign the package artifacts
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/minisign-sign
+        with:
+          files: |
+            ${{ steps.package.outputs.files }}
+          secret-key: ${{ secrets.MINISIGN_SECRET_KEY }}
+          password: ${{ secrets.MINISIGN_PASSWORD }}
+          trusted-comment: "version=${{ steps.release.outputs.version }} file={file} target=${{ matrix.os }}"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          # Extension-qualified, so a slot attests its packages rather than the `.minisig`
+          # siblings; a format the slot does not build simply matches nothing.
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/*.rpm
+            dist/*.deb
+            dist/*.msi
+            dist/*.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-${{ matrix.os }}
+          path: dist/*
+
+  publish:
+    needs: [build]
+    # A tag push and a published Release both start a release build; pull requests and
+    # manual dispatches run checks only. The release payload names its tag directly, so
+    # that arm reads it there rather than inferring it from `github.ref`.
+    if: (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Prepare the release version
+        id: release
+        # The manifest's version, the signature trusted comments and the binary's `--version`
+        # are one bare-SemVer protocol: `is_upgrade` rejects a leading `v`, and the install
+        # smoke test looks for the same string in `--version` output. Read it from where the
+        # build read it rather than stripping the tag a second way.
+        env:
+          GITHUB_EVENT_NAME: release
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: python3 scripts/prepare-release.py
+      - name: Sign the Windows package artifacts
+        uses: ./.github/actions/minisign-sign
+        with:
+          files: |
+            dist/NekoNetease-${{ github.ref_name }}-x86_64.msi
+            dist/NekoNetease-${{ github.ref_name }}-x86_64-windows.zip
+          secret-key: ${{ secrets.MINISIGN_SECRET_KEY }}
+          password: ${{ secrets.MINISIGN_PASSWORD }}
+          trusted-comment: "version=${{ steps.release.outputs.version }} file={file} target=windows-latest"
+      - name: Build the updater manifest
+        uses: ./.github/actions/build-manifest
+        with:
+          version: ${{ steps.release.outputs.version }}
+          tag: ${{ github.ref_name }}
+          artifacts: dist
+          out: dist/latest.json
+      - name: Write SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          # `dist` is the directory the manifest just scanned, so the set is exactly the shipped
+          # packages and their signatures. It is written after that scan because the manifest
+          # refuses a directory holding a file it cannot classify, and before the manifest
+          # signature because that `.minisig` is not a package's.
+          find . -maxdepth 1 -type f \
+            \( -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.rpm' -o -name '*.deb' \
+               -o -name '*.msi' -o -name '*.zip' -o -name '*.minisig' \) \
+            -printf '%f\n' | LC_ALL=C sort | xargs -r sha256sum -- > SHA256SUMS.txt
+      - name: Sign the manifest
+        uses: ./.github/actions/minisign-sign
+        with:
+          files: dist/latest.json
+          secret-key: ${{ secrets.MINISIGN_SECRET_KEY }}
+          password: ${{ secrets.MINISIGN_PASSWORD }}
+          trusted-comment: "version=${{ steps.release.outputs.version }} manifest=true"
+      - name: Upload release assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: dist/**

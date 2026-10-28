@@ -1,0 +1,10 @@
+# The project follows the host's stable toolchain rather than pinning a release, so a new
+# compiler lint surfaces here the day it ships and gets fixed once, instead of a pin hiding it
+# until the next forced bump.
+#
+# `components` stays: it is what makes a bare `rustup toolchain install` in CI provision clippy,
+# rustfmt and the coverage tools. The declared minimum lives in two places that must move
+# together — `[workspace.package] rust-version` in the root manifest and `clippy.toml`'s `msrv`.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]

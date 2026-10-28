@@ -1,0 +1,19 @@
+import { PlaylistGridRow } from "../models.slint";
+
+// The Recommended page's own state: the account's suggested playlists, chunked into the grid
+// rows `PlaylistGrid` virtualizes. The two special cards are static and open My Library's
+// `Playlists.open-special` door; `columns` is the page's `GridGeometry` answer, and Rust
+// re-chunks the flat list on it rather than asking the directory again.
+export global Recommended {
+    in-out property <[PlaylistGridRow]> grid-rows;
+    in-out property <int> columns: 4;
+    in-out property <bool> loading: false;
+    // Set once the fetch has answered either way, so the empty copy is a real answer rather
+    // than the frame before the first response.
+    in-out property <bool> loaded: false;
+    in-out property <bool> failed: false;
+
+    callback section-active-changed(bool);
+    callback retry();
+    callback columns-changed(int);
+}

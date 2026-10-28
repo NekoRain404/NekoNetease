@@ -1,0 +1,252 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Search, SearchGridRow } from "../../globals/search.slint";
+import { Playlists } from "../../globals/playlists.slint";
+import { Wrap } from "../../globals/wrap.slint";
+import { EntityCard } from "../../components/grid/entity-card.slint";
+import { GridGeometry } from "../../components/grid-geometry.slint";
+import { GridColumnsSync } from "../../components/grid-columns-sync.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+
+// A trending term: the RecentChip's body without its close cell, because the feed is not the
+// user's to forget. Bounded and elided together — `elide` keeps the scissor off the glyphs, the
+// bound keeps a pasted-sized term from painting through the chip and out of the strip.
+component HotSearchChip inherits Rectangle {
+    in property <string> term;
+    in property <length> chrome-w;
+    in property <length> width-cap;
+
+    callback picked();
+
+    property <length> natural-w: min(term-text.preferred-width + root.chrome-w, root.width-cap);
+
+    min-width: min(root.chrome-w + term-text.min-width, root.natural-w);
+    preferred-width: root.natural-w;
+    max-width: root.natural-w;
+    horizontal-stretch: 0;
+
+    height: 28px;
+    border-radius: self.height / 2;
+    background: chip-touch.has-hover ? Theme.surface1 : Theme.surface0;
+    border-width: 1px;
+    border-color: Theme.surface2;
+    animate background { duration: Theme.dur-fast; easing: ease-in-out; }
+
+    term-text := Text {
+        x: 10px;
+        y: (root.height - self.height) / 2;
+        width: max(0px, root.width - root.chrome-w);
+        text: root.term;
+        color: Theme.text;
+        font-size: Theme.font-size-sm;
+        overflow: elide;
+    }
+
+    chip-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+}
+
+// A discovery feed as a virtualized card grid under its heading — the charts page's shape, sized
+// for a section rather than a page. `EntityCard` is mounted directly because neither a chart nor a
+// recommended playlist is a selectable library entity, so a card's own activation is the whole of
+// its interaction.
+export component DiscoverCardGrid inherits Rectangle {
+    in property <[SearchGridRow]> rows;
+    // The width the grid may fill, handed over by its section as the chip packer's is.
+    in property <length> avail-width;
+    in property <string> fallback-icon;
+    // How many rows the grid draws before it scrolls internally. A `ListView` virtualizes by row,
+    // and a grid sized to its content would build every card.
+    in property <int> visible-rows: 3;
+
+    callback columns-changed(int);
+    callback open(string /*exact NetEase ID*/);
+
+    property <length> grid-gap: 20px;
+    // The bar's track, taken off the right edge so it overlays a gutter rather than the last card.
+    property <length> bar-gutter: Theme.scrollbar-slot;
+    property <int> lone-row-cards:
+        root.rows.length == 1 ? root.rows[0].entities.length : -1;
+
+    min-width: 0px;
+    height: min(root.rows.length, root.visible-rows) * geom.row-h;
+    clip: true;
+
+    // `GridGeometry` reserves a gap at both outer edges; these cards sit flush with the section's
+    // heading, so the two are added back and the rows carry no outer padding.
+    geom := GridGeometry {
+        avail-width: root.avail-width - root.bar-gutter + 2 * root.grid-gap;
+        gap: root.grid-gap;
+        lone-row-cards: root.lone-row-cards;
+    }
+
+    GridColumnsSync {
+        computed-cols: geom.cols;
+        seed(c) => { root.columns-changed(c); }
+    }
+
+    list := ListView {
+        x: 0;
+        y: 0;
+        width: parent.width - root.bar-gutter;
+        height: parent.height;
+        vertical-scrollbar-policy: always-off;
+        horizontal-scrollbar-policy: always-off;
+        mouse-drag-pan-enabled: false;
+
+        for grid-row in root.rows: Rectangle {
+            // A delegate needs a fixed height or the virtualization math breaks.
+            min-height: geom.row-h;
+            max-height: geom.row-h;
+
+            HorizontalLayout {
+                spacing: root.grid-gap;
+                alignment: start;
+
+                for entity in grid-row.entities: EntityCard {
+                    card-width: geom.card-w;
+                    card-height: geom.card-h;
+                    artwork-path: entity.artwork_path;
+                    cover: Search.request-entity-cover(
+                        entity.artwork_path, Search.entity-covers-generation,
+                    );
+                    fallback-icon: root.fallback-icon;
+                    // The placeholder gets the pronounced zoom, as on every other grid; real
+                    // artwork stays gentle inside the tile's clip.
+                    cover-scale-hover: entity.artwork_path == "" ? 1.15 : 1.04;
+                    title: entity.title;
+                    subtitle: entity.subtitle;
+                    clicked => { root.open(entity.remote_id); }
+                }
+            }
+        }
+    }
+
+    OverlayScrollbar {
+        horizontal: false;
+        x: root.width - self.width;
+        y: 0;
+        width: root.bar-gutter;
+        height: root.height;
+        visible-size: list.visible-height;
+        content-size: list.viewport-height;
+        offset: -list.viewport-y;
+        scroll-to(o) => { list.viewport-y = -o; }
+    }
+}
+
+// A feed that came back empty-handed, stated where its rows would have been. A still-running
+// fetch is the view's loading line, so no heading stands over nothing.
+component DiscoverFailure inherits VerticalLayout {
+    in property <string> message;
+
+    vertical-stretch: 0;
+    spacing: Theme.pad-sm;
+    min-width: 0px;
+
+    Text {
+        text: root.message;
+        color: Theme.subtext0;
+        font-size: Theme.font-size-sm;
+        wrap: word-wrap;
+    }
+
+    HorizontalLayout {
+        vertical-stretch: 0;
+        alignment: start;
+        ActionPill {
+            PillButton {
+                icon: "refresh";
+                text: @tr("Retry");
+                clicked => { Search.retry-discovery(); }
+            }
+        }
+    }
+}
+
+// The empty-query discovery strip. Each feed paints its grid, or its own retry prompt when it
+// failed with none — the page never goes blank behind a request that did not land. The column is
+// left-aligned at the page's inset; only the hot chips' packer wraps, and it starts at the left.
+export component SearchDiscoverSection inherits VerticalLayout {
+    // The width the hot chips wrap in and each grid fills, handed over by the view exactly as
+    // `RecentSearches` takes it — the packer owns the split, the host owns the width.
+    in property <length> avail-width;
+
+    // The chip's lead and trail insets, with no close cell between them.
+    property <length> chip-chrome-w: 20px;
+
+    vertical-stretch: 0;
+    spacing: Theme.pad-lg;
+    min-width: 0px;
+
+    if Search.hot-searches.length > 0: VerticalLayout {
+        vertical-stretch: 0;
+        spacing: Theme.pad-sm;
+        min-width: 0px;
+
+        Text {
+            text: @tr("Search");
+            color: Theme.text;
+            font-size: Theme.font-size-md;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        VerticalLayout {
+            spacing: Theme.pad-sm;
+            for row in Wrap.pack-labels(Search.hot-searches, root.avail-width, root.chip-chrome-w):
+                HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    alignment: start;
+                    for term in row: HotSearchChip {
+                        term: term;
+                        chrome-w: root.chip-chrome-w;
+                        width-cap: root.avail-width;
+                        picked => { Search.hot-search-pick(self.term); }
+                    }
+                }
+        }
+    }
+
+    if Search.hot-searches-failed && Search.hot-searches.length == 0: DiscoverFailure {
+        message: @tr("Couldn't load trending searches");
+    }
+
+    // Mounted only with rows to show, so a failed or still-running feed leaves no heading behind.
+    if Search.discovery-rows.length > 0: VerticalLayout {
+        vertical-stretch: 0;
+        spacing: Theme.pad-sm;
+        min-width: 0px;
+
+        Text {
+            text: @tr("Recommended playlists");
+            color: Theme.text;
+            font-size: Theme.font-size-md;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        DiscoverCardGrid {
+            rows: Search.discovery-grid-rows;
+            avail-width: root.avail-width;
+            fallback-icon: "playlist";
+            columns-changed(c) => {
+                Search.discovery-columns = c;
+                Search.discovery-columns-changed(c);
+            }
+            open(id) => {
+                Search.blur-search-tick += 1;
+                Playlists.open-playlist(id);
+            }
+        }
+    }
+
+    // Only with no rows to show: stale recommendations beside a failure prompt would contradict
+    // the rows the user is looking at.
+    if Search.discovery-failed && Search.discovery-rows.length == 0: DiscoverFailure {
+        message: @tr("Couldn't load recommendations");
+    }
+}

@@ -1,0 +1,190 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Social } from "../../globals/social.slint";
+import { ArtworkImage } from "../../components/artwork-image.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { PillButton } from "../../components/action-pill.slint";
+
+// Replies and system notices, as two read-only tabs. The tab only picks an endpoint in Rust, so a
+// switch drops the rows and starts from the first page rather than mixing the two cursors.
+export component SocialNotificationsView inherits Rectangle {
+    background: transparent;
+
+    VerticalLayout {
+        padding-left: Theme.pad-lg;
+        padding-right: Theme.pad-lg;
+        padding-top: Theme.pad-sm;
+        spacing: Theme.pad-sm;
+
+        HorizontalLayout {
+            spacing: Theme.pad-xs;
+            alignment: start;
+
+            PillButton {
+                text: @tr("Replies");
+                active: Social.notice-tab == 0;
+                clicked => { Social.select-notice-tab(0); }
+            }
+
+            PillButton {
+                text: @tr("Notices");
+                active: Social.notice-tab == 1;
+                clicked => { Social.select-notice-tab(1); }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            if Social.notices-loading && Social.notices.length == 0: Text {
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if Social.notices-error != "" && Social.notices.length == 0: GridEmptyState {
+                icon: "refresh";
+                title: @tr("Couldn't load notifications");
+                body: Social.notices-error;
+                action-icon: "refresh";
+                action-label: @tr("Retry");
+                action-clicked => { Social.retry(); }
+            }
+
+            if !Social.notices-loading && Social.notices-error == ""
+                && Social.notices.length == 0: GridEmptyState {
+                icon: "favorite";
+                title: @tr("Nothing here");
+                body: Social.notice-tab == 0
+                    ? @tr("Nobody has replied to you yet.")
+                    : @tr("No system notices yet.");
+            }
+
+            notices := ListView {
+                x: 0;
+                y: 0;
+                width: parent.width - Theme.scrollbar-slot;
+                height: parent.height;
+                viewport-width: self.width;
+                horizontal-scrollbar-policy: always-off;
+                vertical-scrollbar-policy: always-off;
+
+                for notice[i] in Social.notices: Rectangle {
+                    height: body.preferred-height + Theme.pad-sm * 2;
+                    background: Math.mod(i, 2) == 0 ? transparent : Theme.surface0;
+                    border-radius: Theme.radius-sm;
+
+                    HorizontalLayout {
+                        padding: Theme.pad-sm;
+                        spacing: Theme.pad-sm;
+                        alignment: start;
+
+                        ArtworkImage {
+                            tile-size: 36px;
+                            tile-radius: 18px;
+                            artwork-path: notice.avatar-path;
+                            has-cover: notice.avatar-path != "";
+                            cover: Social.request-cover(
+                                notice.avatar-path, Social.remote-covers-generation,
+                            );
+                            fallback-icon: notice.kind == "comment" ? "chat" : "favorite";
+                        }
+
+                        body := VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+
+                            HorizontalLayout {
+                                spacing: Theme.pad-xs;
+
+                                Text {
+                                    text: notice.nickname == "" ? "NetEase" : notice.nickname;
+                                    color: notice.user-id != "" ? Theme.accent : Theme.text;
+                                    font-size: Theme.font-size-sm;
+                                    font-weight: 600;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: notice.display-time;
+                                    color: Theme.overlay1;
+                                    font-size: Theme.font-size-sm;
+                                }
+                            }
+
+                            if notice.title != "": Text {
+                                text: notice.title;
+                                color: Theme.text;
+                                font-size: Theme.font-size-md;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: notice.content;
+                                color: Theme.subtext0;
+                                font-size: Theme.font-size-sm;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    if notice.user-id != "": TouchArea {
+                        x: 0;
+                        y: 0;
+                        width: 100%;
+                        height: 100%;
+                        mouse-cursor: pointer;
+                        clicked => { Social.open-user(notice.user-id); }
+                    }
+                }
+            }
+
+            OverlayScrollbar {
+                horizontal: false;
+                x: parent.width - self.width;
+                y: 0;
+                width: Theme.scrollbar-slot;
+                height: parent.height;
+                track-color: Theme.scrollbar-track-on-card;
+                visible-size: notices.visible-height;
+                content-size: notices.viewport-height;
+                offset: -notices.viewport-y;
+                scroll-to(o) => { notices.viewport-y = -o; }
+            }
+        }
+
+        // A failed page is the footer's news: the rows already loaded stay on screen, so the
+        // notice takes the More pill's place and the pill returns only once a retry lands.
+        if Social.notices-more-error != "": HorizontalLayout {
+            alignment: center;
+            spacing: Theme.pad-sm;
+
+            Text {
+                text: @tr("Couldn't load more");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                vertical-alignment: center;
+            }
+
+            PillButton {
+                icon: "refresh";
+                text: Social.notices-loading-more ? @tr("Loading…") : @tr("Retry");
+                enabled: !Social.notices-loading-more;
+                clicked => { Social.load-more-notices(); }
+            }
+        }
+
+        if Social.notices-more-error == "" && Social.notices-has-more: HorizontalLayout {
+            alignment: center;
+
+            PillButton {
+                text: Social.notices-loading-more ? @tr("Loading…") : @tr("More notifications");
+                enabled: !Social.notices-loading-more;
+                clicked => { Social.load-more-notices(); }
+            }
+        }
+    }
+}

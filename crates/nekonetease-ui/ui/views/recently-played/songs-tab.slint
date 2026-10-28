@@ -1,0 +1,93 @@
+import { RecentlyPlayed } from "../../globals/curated.slint";
+import { Player } from "../../globals/player.slint";
+import { CloudTrackActions } from "../../globals/cloud-track-actions.slint";
+import { Theme } from "../../theme.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { TrackListScrollbars } from "../../components/track-list-scrollbars.slint";
+import { TrackList } from "../../components/track-list/track-list.slint";
+
+// The Songs tab: a `TrackList` over the post-filter recency model, with its own
+// overlay scrollbars. No inputs — everything it reads is on a global. The
+// scrollbars live here rather than at the mount site because Slint can't read an
+// id declared inside an `if` from outside it, which is also what makes a per-tab
+// file the natural boundary.
+//
+// **Mounted `sortable: false`, and that is the page.** Recency is what this list
+// is; the order it would otherwise offer is a synthetic `"recency"` field no
+// header cell owns, so a single click was unreachable to undo — and it persisted,
+// so the page reopened permanently alphabetical. The headers still resize and
+// still toggle.
+export component RecentlyPlayedSongsTab inherits Rectangle {
+    if RecentlyPlayed.tracks.length > 0: Rectangle {
+        width: 100%;
+        height: 100%;
+
+        tl := TrackList {
+            width: 100%;
+            height: 100%;
+
+            rows: RecentlyPlayed.tracks;
+            columns <=> RecentlyPlayed.track-columns;
+
+            sortable: false;
+            playing-track-id: Player.vm.track.id;
+            playing-remote-id: Player.vm.track.file_path == "" ? Player.vm.track.remote_id : "";
+            cloud-rows: true;
+            cloud-single-click: false;
+            cloud-favorite-clickable: true;
+            view-context: "recently_played";
+            view-selected-ids: RecentlyPlayed.selected-ids;
+
+            play-row(id, idx) => { RecentlyPlayed.play-row(id, idx); }
+            play-cloud-row(id, idx) => { RecentlyPlayed.play-cloud-row(id, idx); }
+            toggle-cloud-favorite(id, liked) => { CloudTrackActions.toggle-favorite(id, liked); }
+            play-next(ids) => { RecentlyPlayed.play-next(ids); }
+            add-to-queue(ids) => { RecentlyPlayed.add-to-queue(ids); }
+            toggle-row-favorite(ids, on) => { RecentlyPlayed.toggle-row-favorite(ids, on); }
+            select-row(idx, id, sh, ct) => { RecentlyPlayed.select-row(idx, id, sh, ct); }
+            select-all => { RecentlyPlayed.select-all(); }
+            clear-selection => { RecentlyPlayed.clear-selection(); }
+            request-blur-search => { RecentlyPlayed.blur-search-tick += 1; }
+            go-to-album(aid) => { RecentlyPlayed.go-to-album(aid); }
+            go-to-artist(aid) => { RecentlyPlayed.go-to-artist(aid); }
+            go-to-genre(gid) => { RecentlyPlayed.go-to-genre(gid); }
+        }
+
+        TrackListScrollbars {
+            x: 0; y: 0; width: 100%; height: 100%;
+            list-y: tl.absolute-position.y - parent.absolute-position.y;
+            body-y: tl.body-y;
+            body-height: tl.body-height;
+            v-visible-height: tl.v-visible-height;
+            v-viewport-height: tl.v-viewport-height;
+            v-offset: tl.v-offset;
+            set-v-offset(o) => { tl.set-v-offset(o); }
+        }
+    }
+
+    if RecentlyPlayed.cloud-loading && RecentlyPlayed.tracks.length == 0: Text {
+        x: Theme.pad-lg;
+        y: Theme.pad-lg;
+        text: @tr("Loading NetEase history…");
+        color: Theme.subtext0;
+    }
+
+    if RecentlyPlayed.cloud-error != "" && RecentlyPlayed.tracks.length == 0: VerticalLayout {
+        x: Theme.pad-lg;
+        y: Theme.pad-lg;
+        width: parent.width - 2 * Theme.pad-lg;
+        spacing: Theme.pad-md;
+        Text {
+            text: RecentlyPlayed.cloud-error;
+            color: Theme.subtext0;
+            wrap: word-wrap;
+        }
+        ActionPill {
+            PillButton {
+                icon: "refresh";
+                text: @tr("Retry");
+                clicked => { RecentlyPlayed.retry-cloud(); }
+            }
+        }
+    }
+}

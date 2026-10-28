@@ -1,0 +1,132 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Favorites } from "../../globals/curated.slint";
+import { MvCardRow } from "../../models.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { EntityCard } from "../../components/grid/entity-card.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+
+// A video's peers, in the space beside its thread. One column rather than the artist page's
+// horizontal strip: the page's height is already spent on the stage and the comments, and a rail
+// costs no vertical budget. A plain `for` rather than a virtualized grid, the server answering
+// with a fixed handful.
+export component MvSimilarRail inherits Rectangle {
+    in property <[MvCardRow]> mvs;
+    in property <bool> loading;
+    in property <string> error;
+
+    callback open(string);
+    callback retry();
+
+    width: 160px;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: Theme.pad-sm;
+
+        Text {
+            text: @tr("Similar videos");
+            color: Theme.text;
+            font-size: Theme.font-size-md;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        // One box takes the whole remainder, mounted or not, so the states below cannot divide
+        // the rail's surplus between themselves as equally-stretching rows.
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            if root.mvs.length == 0: VerticalLayout {
+                x: 0;
+                y: 0;
+                width: 100%;
+                spacing: Theme.pad-sm;
+                alignment: start;
+
+                if root.loading: Text {
+                    text: @tr("Loading…");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+
+                if root.error != "": Text {
+                    text: root.error;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+
+                if root.error != "": ActionPill {
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        enabled: !root.loading;
+                        clicked => { root.retry(); }
+                    }
+                }
+
+                if !root.loading && root.error == "": Text {
+                    text: @tr("No similar videos");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.mvs.length > 0: Rectangle {
+                width: 100%;
+                height: 100%;
+                clip: true;
+
+                sv := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    horizontal-scrollbar-policy: always-off;
+                    vertical-scrollbar-policy: always-off;
+                    mouse-drag-pan-enabled: false;
+                    viewport-width: self.width;
+
+                    VerticalLayout {
+                        spacing: Theme.pad-sm;
+                        alignment: start;
+
+                        for mv in root.mvs: Rectangle {
+                            width: 150px;
+                            height: 178px;
+                            clip: false;
+
+                            EntityCard {
+                                width: 100%;
+                                height: 100%;
+                                artwork-path: mv.artwork_path;
+                                cover: Favorites.request-album-cover(
+                                    mv.artwork_path, Favorites.album-covers-generation,
+                                );
+                                title: mv.title;
+                                subtitle: mv.subtitle;
+                                card-width: 150px;
+                                card-height: 178px;
+                                fallback-icon: "movie";
+                                clicked => { root.open(mv.remote_id); }
+                            }
+                        }
+                    }
+                }
+
+                OverlayScrollbar {
+                    x: parent.width - self.width;
+                    y: 0;
+                    width: Theme.scrollbar-slot;
+                    height: parent.height;
+                    visible-size: sv.visible-height;
+                    content-size: sv.viewport-height;
+                    offset: -sv.viewport-y;
+                    scroll-to(o) => { sv.viewport-y = -o; }
+                }
+            }
+        }
+    }
+}

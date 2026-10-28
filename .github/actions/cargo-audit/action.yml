@@ -1,0 +1,11 @@
+name: cargo audit
+description: Fail on advisories in the locked dependency graph.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if ! command -v cargo-audit >/dev/null 2>&1; then
+          cargo install cargo-audit --locked
+        fi
+        cargo audit --locked

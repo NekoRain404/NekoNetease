@@ -1,0 +1,202 @@
+import { Theme } from "../theme.slint";
+import { RecentlyPlayed } from "../globals/curated.slint";
+import { GridColumnsSync } from "../components/grid-columns-sync.slint";
+import { GridGeometry } from "../components/grid-geometry.slint";
+import { MosaicTabHero } from "../components/hero/mosaic-tab-hero.slint";
+import { TooltipFrame } from "../components/tooltip-frame.slint";
+import { ViewTransition } from "../components/view-transition.slint";
+import { ActionPill, PillButton, PillDivider } from "../components/action-pill.slint";
+import { ColumnTogglePopup } from "../components/track-list/column-toggle-popup.slint";
+import { FilterThrottle } from "../components/filter-throttle.slint";
+import { RecentlyPlayedMostPlayedTab } from "recently-played/most-played-tab.slint";
+import { RecentlyPlayedSongsTab } from "recently-played/songs-tab.slint";
+
+// A **pinned** hero banner — the shared `MosaicTabHero`, carrying the `TabBar` and the filter
+// `SearchBar` over the mosaic, title and chips — above two mutually exclusive sub-views: the
+// recency `TrackList` and the Most Played card grid. Only the body scrolls, so the tabs stay
+// reachable.
+//
+// **Each tab owns exactly one scroller**, which is why this view mounts plain `OverlayScrollbar`s
+// rather than `CompositeScrollbars`: a nested `ListView` swallows the wheel at its own edge instead
+// of bubbling, and one scroller per tab retires that whole mechanism along with the hover sentinel
+// and the two-way `viewport-y` binding that opts out of Slint's out-of-bounds correction.
+export component RecentlyPlayedView inherits Rectangle {
+    // Bumped per keystroke; `FilterThrottle` collapses the burst into one filter.
+    property <int> filter-tick-pending: 0;
+
+    filter-throttle := FilterThrottle {
+        pending: root.filter-tick-pending;
+        fire() => { RecentlyPlayed.filter-changed(RecentlyPlayed.filter); }
+    }
+
+    // Catches clicks no inner TouchArea consumes; the SearchBar blurs on the tick.
+    TouchArea {
+        clicked => { RecentlyPlayed.blur-search-tick += 1; }
+    }
+
+    // The Most Played grid's geometry. Measured off the body, whose width the
+    // layout fixes independently of the cards inside it. The gutter is the
+    // host's choice, so it lives here and is handed to both the geometry and the
+    // grid — an `in` property isn't readable back from outside the component
+    // declaring it.
+    property <length> grid-gap: 20px;
+
+    geom := GridGeometry {
+        avail-width: body.width;
+        gap: root.grid-gap;
+        lone-row-cards: RecentlyPlayed.most-played-rows.length == 1
+            ? RecentlyPlayed.most-played-rows[0].entities.length
+            : -1;
+    }
+
+    GridColumnsSync {
+        computed-cols: geom.cols;
+        seed(c) => {
+            RecentlyPlayed.columns = c;
+            RecentlyPlayed.columns-changed(c);
+        }
+    }
+
+    property <string> filter-placeholder:
+        RecentlyPlayed.tab-idx == RecentlyPlayed.tab-most-played
+            ? @tr("Filter most played…")
+            : @tr("Filter recently played…");
+
+    VerticalLayout {
+        hero := MosaicTabHero {
+            tab-labels: [@tr("Songs"), @tr("Most Played")];
+            tab-icons: ["music_note", "bar_chart"];
+            tab-idx <=> RecentlyPlayed.tab-idx;
+
+            title: @tr("Recently Played");
+            filter-placeholder: root.filter-placeholder;
+            // Only the Songs tab states its emptiness as a sentence — the grid
+            // paints a `GridEmptyState`, which says it better.
+            show-empty-copy: RecentlyPlayed.tab-idx == RecentlyPlayed.tab-songs
+                && RecentlyPlayed.track-count == 0
+                && !RecentlyPlayed.cloud-loading
+                && RecentlyPlayed.cloud-error == "";
+            empty-copy: @tr("No recently played tracks");
+
+            // Clamped, unlike every other reader of this count — see the same mount in
+            // `favorites-view.slint`: `MosaicHeroTile` picks its fallback glyph on `== 0`, so
+            // the not-yet-fetched `-1` draws the generic placeholder note instead.
+            mosaic-count: max(RecentlyPlayed.track-count, 0);
+            mosaic-cover: RecentlyPlayed.cover;
+            // Matches the sidebar entry's glyph.
+            empty-glyph: "history";
+
+            blur-a: RecentlyPlayed.blur-img-a;
+            blur-b: RecentlyPlayed.blur-img-b;
+            use-a: RecentlyPlayed.blur-use-a;
+            has-blur: RecentlyPlayed.has-blur;
+
+            filter <=> RecentlyPlayed.filter;
+            blur-tick: RecentlyPlayed.blur-search-tick;
+
+            search-edited(t) => { root.filter-tick-pending += 1; }
+            tab-selected(i) => {
+                // A recency filter carried into the Most Played grid would
+                // silently hide cards. Rust drops its own shadow in
+                // `tab-changed`; this only moves the Slint side.
+                RecentlyPlayed.filter = "";
+                RecentlyPlayed.blur-search-tick += 1;
+                RecentlyPlayed.tab-changed(i);
+            }
+
+            // Songs gets the full pill — Shuffle and the column toggle; Most
+            // Played a Shuffle scoped to what its grid shows. **Neither has
+            // a sort row**: Songs because recency is the page, Most Played
+            // because its title names its own ordering.
+            if RecentlyPlayed.tab-idx == RecentlyPlayed.tab-songs
+                && RecentlyPlayed.track-count > 0: HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: Theme.pad-md;
+                alignment: start;
+
+                ActionPill {
+                    PillButton {
+                        icon: "shuffle";
+                        text: @tr("Shuffle");
+                        clicked => { RecentlyPlayed.shuffle-all(); }
+                    }
+                    PillDivider { }
+                    ColumnTogglePopup {
+                        columns <=> RecentlyPlayed.track-columns;
+                        toggled(id) => { RecentlyPlayed.toggle-column(id); }
+                    }
+                }
+            }
+
+            if RecentlyPlayed.tab-idx == RecentlyPlayed.tab-most-played
+                && RecentlyPlayed.most-played-count > 0: HorizontalLayout {
+                vertical-stretch: 0;
+                alignment: start;
+
+                ActionPill {
+                    PillButton {
+                        icon: "shuffle";
+                        text: @tr("Shuffle");
+                        clicked => { RecentlyPlayed.shuffle-most-played(); }
+                    }
+                }
+            }
+        }
+
+        // One tab mounted at a time, each owning its own scroller and its own
+        // overlay scrollbars. **The bars live inside their branch** because Slint
+        // can't read an id declared inside an `if` from outside it — which is
+        // also why each branch wraps its own `ViewTransition` rather than the
+        // body wrapping one: the slide has to carry the scrollbars with the
+        // content, and the whole thing is destroyed and rebuilt anyway. The
+        // `clip` contains the slide's overshoot.
+        body := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            // --- Songs ------------------------------------------------------
+            if RecentlyPlayed.tab-idx == RecentlyPlayed.tab-songs: ViewTransition {
+                width: parent.width;
+                height: parent.height;
+                enter-from: hero.tab-enter-from;
+                enabled: hero.tab-anim-armed;
+
+                RecentlyPlayedSongsTab {
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+
+            // --- Most Played ------------------------------------------------
+            if RecentlyPlayed.tab-idx == RecentlyPlayed.tab-most-played: ViewTransition {
+                width: parent.width;
+                height: parent.height;
+                enter-from: hero.tab-enter-from;
+                enabled: hero.tab-anim-armed;
+
+                RecentlyPlayedMostPlayedTab {
+                    width: 100%;
+                    height: 100%;
+                    card-w: geom.card-w;
+                    card-h: geom.card-h;
+                    row-h: geom.row-h;
+                    gap: root.grid-gap;
+                }
+            }
+        }
+    }
+
+    // On a layer of its own. It can't hang off the tab: the bar sits in the hero,
+    // and Slint paints in declaration order, so anything the hero owns is covered
+    // by the body underneath. The band publishes the rect it derives from the
+    // hovered *index*, so a tab that moves under a parked pointer keeps its
+    // tooltip anchored.
+    TooltipFrame {
+        x: hero.absolute-position.x - root.absolute-position.x + hero.tip-x;
+        y: hero.absolute-position.y - root.absolute-position.y + hero.tip-y;
+        width: hero.tip-w;
+        height: hero.tip-h;
+        label: hero.tip-label;
+        shown: hero.tip-visible;
+    }
+}

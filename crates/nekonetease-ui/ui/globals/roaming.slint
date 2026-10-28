@@ -1,0 +1,31 @@
+// The roaming page's own session. A roam is playback, so it outlives the page; the state here
+// describes the page's view of that session, never a second copy of which track is playing.
+export global Roaming {
+    // -1 when no roam is running, otherwise the mode index the page started.
+    in-out property <int> mode: -1;
+    in-out property <bool> loading: false;
+    in-out property <string> error;
+    in-out property <bool> feedback-pending: false;
+
+    // The three starting points, named once so the picker and the running panel cannot call
+    // the same mode two different things.
+    public pure function mode-title(mode: int) -> string {
+        if mode == 0 { return @tr("Personal FM"); }
+        if mode == 1 { return @tr("Liked songs"); }
+        if mode == 2 { return @tr("Similar songs"); }
+        return @tr("Roaming");
+    }
+
+    public pure function mode-subtitle(mode: int) -> string {
+        if mode == 0 { return @tr("Songs your own listening suggests"); }
+        if mode == 1 { return @tr("A stream built from your favourites"); }
+        if mode == 2 { return @tr("Continue from the track now playing"); }
+        return "";
+    }
+
+    callback section-active-changed(bool);
+    callback start(int /*mode*/);
+    callback stop();
+    callback skip();
+    callback dislike();
+}

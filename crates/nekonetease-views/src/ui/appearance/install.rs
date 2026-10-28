@@ -1,0 +1,216 @@
+//! The startup `install` function. Hydrates the Slint `Settings`
+//! global from `settings.json`, applies the resolved palette, wires
+//! every chip callback, and seeds the Material You repaint subscriber.
+
+use std::sync::Arc;
+
+use async_compat::Compat;
+use parking_lot::RwLock;
+use slint::ComponentHandle;
+use tokio::sync::watch;
+
+use super::repaint::{apply_settings, repaint_from_settings};
+use super::{
+    AppearanceHandles, PersistedAccent, accent_picker, material_you_sync,
+    read_initial_system_state, seed_theme_names, system_watcher, theme_picker, window_border,
+    window_settings,
+};
+use nekonetease_app::library;
+use nekonetease_app::services::settings::SettingsData;
+use nekonetease_app::state::{AppState, Signal};
+use nekonetease_core::error::{AppError, describe};
+use nekonetease_core::themes::SystemColorState;
+use nekonetease_platform::services::platform::desktop;
+use nekonetease_ui::{AppWindow, MiniPlayer, Settings, Theme};
+
+/// Hydrate the Settings global from `settings.json`, paint the resolved
+/// palette, and wire chip-click callbacks. Call once during startup,
+/// before `hydrate_ui_from_settings` so the UI's first frame uses the
+/// correct theme. Returns handles boot forwards to
+/// `tasks::material_you` so the coordinator can write dynamic palettes
+/// back into `os_state` and kick repaints.
+pub fn install(ui: &AppWindow, state: &AppState) -> Result<AppearanceHandles, AppError> {
+    let settings = library::settings::get_settings(&state.paths)?;
+
+    // Read the OS appearance state synchronously. We're on the main
+    // thread, before the Slint event loop, so a brief D-Bus + file read
+    // is the cheapest option — no async plumbing needed for a one-shot.
+    let initial_state = read_initial_system_state();
+    let os_state = Arc::new(RwLock::new(initial_state.clone()));
+
+    let kick = Signal::new();
+    let repaint_tx = spawn_repaint_subscriber(ui, state, initial_state.clone());
+
+    // Follow the OS's light/dark flips, repainting whenever the persisted
+    // variant is `"system"`.
+    system_watcher::watch_os_state(
+        ui,
+        state,
+        os_state.clone(),
+        initial_state.clone(),
+        kick.clone(),
+    );
+
+    seed_theme_names(ui);
+    // Ahead of `apply_settings`, whose palette apply resolves the border colour seeded here.
+    window_border::seed(ui, &settings.window);
+    apply_settings(ui, &settings, &initial_state);
+    seed_window_rows(ui, &settings);
+    super::ui_scale::install(ui, state, settings.ui_scale_percent);
+
+    // The boot migration for a `settings.json` written before `theme_preferences`
+    // existed.
+    if let Err(e) = library::settings::seed_theme_preference(&state.paths) {
+        log::warn!("seed theme_preferences: {}", describe(&e));
+    }
+
+    let persisted_accent: PersistedAccent =
+        Arc::new(parking_lot::Mutex::new(settings.accent_color.clone()));
+    wire_pickers(ui, state, &os_state, &kick, &persisted_accent);
+    wire_window_rows(ui, state);
+
+    Ok(AppearanceHandles { os_state, kick, repaint_tx })
+}
+
+/// The repaint channel — the Material You coordinator writes the latest
+/// `SystemColorState` snapshot here after each palette generation; the
+/// subscriber this spawns applies it on the UI thread.
+fn spawn_repaint_subscriber(
+    ui: &AppWindow,
+    state: &AppState,
+    initial_state: SystemColorState,
+) -> watch::Sender<SystemColorState> {
+    let (repaint_tx, mut repaint_rx) = watch::channel(initial_state);
+    let weak = ui.as_weak();
+    let state = state.clone();
+    let res = slint::spawn_local(Compat::new(async move {
+        while repaint_rx.changed().await.is_ok() {
+            let snap = repaint_rx.borrow_and_update().clone();
+            let Some(ui) = weak.upgrade() else { return };
+            repaint_from_settings(&ui, &state, &snap);
+        }
+    }));
+    if let Err(e) = res {
+        log::warn!("material_you repaint subscriber: {}", describe(&e));
+    }
+    repaint_tx
+}
+
+/// The window rows' persisted values, written before `app.show()` so the first
+/// painted frame reflects them.
+fn seed_window_rows(ui: &AppWindow, settings: &SettingsData) {
+    // Seed the Match Unfocused Window Background row.
+    {
+        let g = ui.global::<Settings>();
+        g.set_match_unfocused_supported(desktop::is_kde_desktop());
+        g.set_match_unfocused_bg(settings.layout.match_unfocused_to_system_bg);
+    }
+
+    // Seed Window Corner Radius. `Settings.corner-radius` is the UI's
+    // single source of truth (chips bind to it); `Theme.shell-radius`
+    // drives the actual painted rounding on the outer mantle shell +
+    // inner content panel in custom-titlebar mode. Both must be set
+    // before `app.show()` so the first frame renders with the persisted
+    // radius.
+    #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        reason = "corner_radius clamped to 0..=15: exact in i32 and exact in f32 (f32 mantissa has 23 bits)"
+    )]
+    {
+        let radius = window_settings::corner_radius_preset(settings.corner_radius);
+        ui.global::<Settings>().set_corner_radius(radius as i32);
+        let theme = ui.global::<Theme>();
+        theme.set_shell_radius(radius as f32);
+        theme.set_native_content_radius(desktop::get_os_corner_radius() as f32);
+    }
+
+    // Seed the Decoration Button Style + Side rows. Same shape as the
+    // corner-radius seed above: `Settings.*` is the UI source of truth
+    // (chip selection), `Theme.*` drives `custom-titlebar.slint`'s
+    // conditional layout. Both written before `app.show()` so the first
+    // painted frame reflects the persisted choice.
+    {
+        let style_idx = window_settings::idx_for(settings.window.titlebar_button_style);
+        let side_idx = window_settings::idx_for_side(settings.window.titlebar_button_side);
+        let mini_style_idx = window_settings::idx_for(settings.window.mini_player_button_style);
+        let g = ui.global::<Settings>();
+        g.set_titlebar_button_style(style_idx);
+        g.set_titlebar_button_side(side_idx);
+        g.set_mini_player_button_style(mini_style_idx);
+        let theme = ui.global::<Theme>();
+        theme.set_titlebar_button_style(style_idx);
+        theme.set_titlebar_button_side(side_idx);
+        ui.global::<MiniPlayer>().set_button_style(mini_style_idx);
+    }
+
+    // Seed the tray toggles. `tray_enabled` drives the "System Tray Icon"
+    // master switch. `close_to_tray` is mirrored into both the Slint global
+    // (drives its switch) and the `tray_bridge` atomic (drives
+    // `window_chrome`'s close handlers) so a close-to-tray-enabled launch
+    // behaves correctly before the user ever opens Settings.
+    {
+        ui.global::<Settings>().set_tray_enabled(settings.tray.tray_enabled);
+        let on = settings.tray.close_to_tray;
+        ui.global::<Settings>().set_close_to_tray(on);
+        crate::ui::shell::tray_bridge::set_close_to_tray(on);
+    }
+
+    // Seed the Overflow Menu Buttons checkboxes from
+    // `settings.overflow_buttons`. The Vec<String> stores ids of buttons
+    // that have been MOVED INTO the overflow popup, so the boolean is
+    // `true` iff the id is present.
+    {
+        let g = ui.global::<Settings>();
+        let v = &settings.overflow_buttons;
+        g.set_overflow_favorite(v.iter().any(|x| x == "favorite"));
+        g.set_overflow_repeat(v.iter().any(|x| x == "repeat"));
+        g.set_overflow_shuffle(v.iter().any(|x| x == "shuffle"));
+        g.set_overflow_pin(v.iter().any(|x| x == "pin"));
+        g.set_overflow_queue(v.iter().any(|x| x == "queue"));
+        g.set_overflow_quality(v.iter().any(|x| x == "quality"));
+    }
+}
+
+/// The theme, variant, accent and colour-style pickers.
+fn wire_pickers(
+    ui: &AppWindow,
+    state: &AppState,
+    os_state: &Arc<RwLock<SystemColorState>>,
+    kick: &Signal,
+    persisted_accent: &PersistedAccent,
+) {
+    theme_picker::wire_theme_changed(
+        ui,
+        state,
+        os_state.clone(),
+        kick.clone(),
+        persisted_accent.clone(),
+    );
+    theme_picker::wire_variant_changed(
+        ui,
+        state,
+        os_state.clone(),
+        kick.clone(),
+        persisted_accent.clone(),
+    );
+    accent_picker::wire_accent_changed(ui, state, os_state.clone(), persisted_accent.clone());
+    material_you_sync::wire_color_style_changed(
+        ui,
+        state,
+        os_state.clone(),
+        kick.clone(),
+        persisted_accent.clone(),
+    );
+}
+
+fn wire_window_rows(ui: &AppWindow, state: &AppState) {
+    window_settings::wire_match_unfocused_bg_changed(ui, state);
+    window_settings::wire_corner_radius_changed(ui, state);
+    window_settings::wire_titlebar_button_style_changed(ui, state);
+    window_settings::wire_titlebar_button_side_changed(ui, state);
+    window_settings::wire_mini_player_button_style_changed(ui, state);
+    window_settings::wire_overflow_buttons_changed(ui, state);
+    window_settings::wire_close_to_tray_changed(ui, state);
+    window_border::wire(ui, state);
+}

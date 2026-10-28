@@ -1,0 +1,52 @@
+import { Theme } from "../theme.slint";
+import { Nav, NavEnterFrom } from "../globals/nav.slint";
+
+// Enter-only wrapper, re-instantiated on every branch mount so the flip and the animation replay
+// per nav. There is no exit half — Slint's `if` destroys the outgoing view instantly.
+//
+// **A single-shot Timer, not `init`.** `init` runs *after* bindings resolve to their final values,
+// so flipping `shown` there makes `true` the initial value and the view appears instantly; the
+// Timer fires once the first `shown: false` frame has painted.
+export component ViewTransition inherits Rectangle {
+    in property <NavEnterFrom> enter-from: NavEnterFrom.above;
+    // Off, the view is simply *there*. For the nested case: a page wrapping each tab body in
+    // one of these, inside its own enter transition, would otherwise play both on the mount
+    // frame and a horizontal tab slide over a fade-down reads as a diagonal. The host arms it on
+    // the first real tab pick.
+    in property <bool> enabled: true;
+    // **Fade without translating.** `enabled` answers "does this view animate at all"; this
+    // answers "is anything *else* already moving it". A body under a container morphing its
+    // own height is translated by that morph, so its own slide composes with it — a diagonal
+    // on the other axis, and on the same axis two curves that can send it back. My Library's
+    // band is the one such container.
+    in property <bool> slide: true;
+    private property <bool> shown: false;
+    // Disabled — or suppressed, for the launch mount and the return from the miniplayer — this is
+    // `true` from the first evaluation, so the three bindings below never transition.
+    private property <bool> settled: !root.enabled || root.shown || Nav.suppress-enter-animation;
+
+    Timer {
+        interval: 1ms;
+        running: true;
+        triggered() => {
+            self.running = false;
+            root.shown = true;
+            // **The suppressed mount hands the suppression back, not Rust** — a clear from outside
+            // can land on a frame where `shown` is still false and fade the settled page back
+            // out. Gated on `enabled` because a nested body that never animates runs this same
+            // Timer and would drop the flag for the page above it.
+            if (root.enabled) {
+                Nav.suppress-enter-animation = false;
+            }
+        }
+    }
+
+    opacity: settled ? 1.0 : 0.0;
+    x: settled || !root.slide ? 0px : (enter-from == NavEnterFrom.right ? 32px
+                                     : enter-from == NavEnterFrom.left  ? -32px : 0px);
+    y: settled || !root.slide ? 0px : (enter-from == NavEnterFrom.above ? -32px : 0px);
+
+    animate opacity { duration: Theme.dur-spatial; easing: cubic-bezier(0.2, 0, 0, 1); }
+    animate x       { duration: Theme.dur-spatial; easing: cubic-bezier(0.2, 0, 0, 1); }
+    animate y       { duration: Theme.dur-spatial; easing: cubic-bezier(0.2, 0, 0, 1); }
+}

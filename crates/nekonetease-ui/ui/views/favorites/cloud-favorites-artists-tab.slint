@@ -1,0 +1,148 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Favorites } from "../../globals/curated.slint";
+import { CloudTrackActions } from "../../globals/cloud-track-actions.slint";
+import { GridGeometry } from "../../components/grid-geometry.slint";
+import { GridColumnsSync } from "../../components/grid-columns-sync.slint";
+import { EntityCard } from "../../components/grid/entity-card.slint";
+import { CardFavoriteButton } from "../../components/grid/card-favorite-button.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+
+// NetEase saved artists use the cloud row projection and exact remote IDs. The local artists grid
+// remains a separate surface with its own data and callbacks.
+export component CloudFavoritesArtistsTab inherits Rectangle {
+    geometry := GridGeometry { avail-width: root.width; }
+    GridColumnsSync {
+        computed-cols: geometry.cols;
+        seed(cols) => {
+            Favorites.columns = cols;
+            Favorites.columns-changed(cols);
+        }
+    }
+
+    VerticalLayout {
+        padding-top: Theme.pad-md;
+        spacing: Theme.pad-sm;
+
+        if Favorites.cloud-artists-error != "": HorizontalLayout {
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            spacing: Theme.pad-md;
+            Text {
+                text: Favorites.cloud-artists-error;
+                color: Theme.subtext0;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Retry");
+                    enabled: !Favorites.cloud-artists-loading;
+                    clicked => { Favorites.retry-cloud-artists(); }
+                }
+            }
+        }
+
+        if Favorites.cloud-artist-action-error != "": Text {
+            x: Theme.pad-lg;
+            color: Theme.subtext0;
+            text: Favorites.cloud-artist-action-error;
+            wrap: word-wrap;
+        }
+
+        panel := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            list := ListView {
+                width: 100%;
+                height: 100%;
+                vertical-scrollbar-policy: always-off;
+                horizontal-scrollbar-policy: always-off;
+                mouse-drag-pan-enabled: false;
+
+                for row in Favorites.cloud-artist-rows: Rectangle {
+                    min-height: geometry.row-h;
+                    max-height: geometry.row-h;
+                    HorizontalLayout {
+                        padding-left: geometry.gap;
+                        padding-right: geometry.gap;
+                        spacing: geometry.gap;
+                        alignment: start;
+
+                        for artist in row.albums: Rectangle {
+                            width: geometry.card-w;
+                            height: geometry.card-h;
+                            card := EntityCard {
+                                card-width: geometry.card-w;
+                                card-height: geometry.card-h;
+                                circular: true;
+                                artwork-path: artist.artwork_path;
+                                cover: Favorites.request-cloud-artist-cover(artist.artwork_path, Favorites.cloud-artist-covers-generation);
+                                fallback-icon: "person";
+                                title: artist.title;
+                                subtitle: artist.artist;
+                                overlay-hovered: favorite.has-hover;
+                                clicked => { CloudTrackActions.open-artist(artist.remote_id); }
+                            }
+                            favorite := CardFavoriteButton {
+                                card-width: geometry.card-w;
+                                is-favorite: true;
+                                marks-kept: false;
+                                card-hovered: card.card-hovered;
+                                button-enabled: !artist.pending;
+                                tooltip-text: @tr("Unfavorite");
+                                clicked => { Favorites.set-cloud-artist-favorite(artist.remote_id, false); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            OverlayScrollbar {
+                horizontal: false;
+                x: parent.width - self.width;
+                width: Theme.scrollbar-slot;
+                height: parent.height;
+                visible-size: list.visible-height;
+                content-size: list.viewport-height;
+                offset: -list.viewport-y;
+                scroll-to(o) => { list.viewport-y = -o; }
+            }
+
+            if Favorites.cloud-artists-loading && Favorites.cloud-artist-count < 0: Text {
+                x: Theme.pad-lg;
+                y: Theme.pad-lg;
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+            }
+
+            if !Favorites.cloud-artists-loading && Favorites.cloud-artists-error == ""
+                && Favorites.cloud-artist-count >= 0 && Favorites.filtered-cloud-artist-count == 0
+                && !Favorites.cloud-artists-has-more: GridEmptyState {
+                icon: "person";
+                title: Favorites.filter == "" ? @tr("No favorite artists yet") : @tr("No results found");
+                body: Favorites.filter == "" ? @tr("Favorite a song and its artist appears here.") : "";
+            }
+        }
+
+        if Favorites.cloud-artists-loading-more: Text {
+            x: Theme.pad-lg;
+            text: @tr("Loading…");
+            color: Theme.subtext0;
+        }
+
+        if Favorites.cloud-artists-has-more && !Favorites.cloud-artists-loading-more
+            && Favorites.cloud-artists-error == "": ActionPill {
+            PillButton {
+                icon: "expand_more";
+                text: @tr("More");
+                enabled: !Favorites.cloud-artists-loading;
+                clicked => { Favorites.load-more-cloud-artists(); }
+            }
+        }
+    }
+}

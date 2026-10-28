@@ -1,0 +1,33 @@
+[package]
+name = "nekonetease-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Audio decoding for NekoNetease's playback chain"
+publish = false
+
+[lib]
+doctest = false
+
+# No `cpal`. Everything under the DSP chain is `nekonetease-playback`'s, and the check that the two
+# tiers stayed apart is that neither manifest names the other's third-party dependency.
+[dependencies]
+nekonetease-core = { path = "../nekonetease-core" }
+symphonia.workspace = true
+# The Opus decoder `player::source::opus` registers, which Symphonia has none of.
+opus-pure.workspace = true
+parking_lot.workspace = true
+# `SeekError`, the one error in this crate that is its own type rather than `AppError`.
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+nekonetease-testkit = { path = "../nekonetease-testkit" }
+# The decode tests build tagged fixtures and write them into a throwaway directory.
+lofty.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

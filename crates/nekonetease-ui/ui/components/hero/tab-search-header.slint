@@ -1,0 +1,160 @@
+import { Theme } from "../../theme.slint";
+import { NavEnterFrom } from "../../globals/nav.slint";
+import { SearchBar } from "../search-bar.slint";
+import { TabBar } from "../tab-bar.slint";
+
+// The tab bar and the filter box sharing one row, plus the width budget dividing it and the tooltip
+// anchor the host draws for them. **Three pages spelled this out before**, each paying for the five
+// fixes separately, so they live here once:
+//
+//  1. **The floor is published, not restated.** `row-floor` is the narrowest row still seating the
+//     bar at `compact-w` *and* the input at `search-w-max`; a host seeds its width mirror off it,
+//     seeded wide being how the bar draws full-width tabs into a panel that can't seat them.
+//  2. **The budget reserves against two *published* floors**, `bar.compact-w` and `search.min-w`.
+//  3. **The filter yields before the tabs do** — tabs navigate, search only refines.
+//  4. **The slide direction comes off `bar.previous-index`**, never a mirror of `selected-index`:
+//     the cell writes that *before* it emits `selected`, and a page can be re-entered on any tab.
+//  5. **The tooltip anchor is published rather than drawn**, the pill having to be declared after
+//     the scroll body; equal-width cells let the rect come from the *index*.
+//
+// Data-agnostic, and **no string is spelled here** — `@tr` folds literals at codegen.
+export component TabSearchHeader inherits HorizontalLayout {
+    // Inline `[@tr("…"), …]` at the host — an array populated from Rust renders untranslated.
+    in property <[string]> tab-labels;
+    in property <[string]> tab-icons;
+    // Two-way, per the orphaned-one-way-binding pitfall — the bar writes this on every pick.
+    in-out property <int> tab-idx;
+
+    in-out property <string> filter;
+    in property <string> filter-placeholder;
+    in property <int> blur-tick;
+    // **Whether the row carries a box at all.** For a surface whose content is not a list of rows
+    // to narrow, a box that filters
+    // nothing is worse than no box. Collapses the cell rather than unmounting it, for two reasons
+    // below: `search.min-w` has to stay readable, and the budget deliberately keeps reserving as
+    // though the box were there so the bar does not re-flow when it goes.
+    in property <bool> search-shown: true;
+
+    // Taken from the host's mirror rather than measured — a live `root.width` read feeding a
+    // child's size re-enters layout, and the host needs the mirror for its own geometry.
+    in property <length> avail-w;
+    // The leading slot's width, its trailing gap folded in, so the row can carry `spacing: 0` and
+    // the whole inset can ease to zero. Only `LibraryTabBand` uses it, for its morphing back button.
+    in property <length> lead-w: 0px;
+
+    // Every brush the row paints with, defaulted to the theme. Settings takes the defaults; the two
+    // hero bands hand over solved `HeroBackdrop` tiers, neither being right for both surfaces.
+    in property <brush> label-color: Theme.text;
+    in property <brush> active-color: Theme.accent;
+    in property <brush> hover-fill: Theme.surface0;
+    in property <brush> divider-color: Theme.surface1;
+
+    // Fires *after* the direction and arming below have settled, so a host handler that clears
+    // its filter and calls into Rust can't be sequenced ahead of them.
+    callback tab-selected(int);
+    callback search-edited(string);
+
+    // --- The width budget ---------------------------------------------------
+    property <length> search-w-max: 220px;
+    property <length> search-w-min: search.min-w;
+    property <length> content-w: root.avail-w - root.lead-w;
+
+    out property <length> row-floor:
+        bar.compact-w + 2 * Theme.pad-md + root.search-w-max;
+    out property <length> search-w: clamp(
+        root.content-w - bar.compact-w - 2 * Theme.pad-md,
+        root.search-w-min, root.search-w-max);
+    // The bar's own height, published so a host can reserve its row without restating it.
+    out property <length> row-h: bar.height;
+
+    // --- What a host's sub-view bodies read ---------------------------------
+    out property <NavEnterFrom> tab-enter-from: NavEnterFrom.right;
+    // Starts `false` so a page's own entry animation isn't compounded with a horizontal slide — the
+    // two together read as a diagonal — and it re-disarms for free, the page being rebuilt on entry.
+    out property <bool> tab-anim-armed: false;
+
+    // --- The compact-mode tooltip's anchor ----------------------------------
+    //
+    // Relative to this row; the host adds its own `absolute-position` delta. **Both axes carry the
+    // bar's offset inside the row**, the one part a host can't reach: with a leading slot the bar
+    // starts a whole `lead-w` in, and the two hosts without one put it at `x == 0` — which is what
+    // makes dropping the term invisible except where it matters.
+    out property <length> tip-x:
+        bar.absolute-position.x - root.absolute-position.x + bar.tab-w * bar.hovered-idx;
+    out property <length> tip-y: bar.absolute-position.y - root.absolute-position.y;
+    out property <length> tip-w: bar.tab-w;
+    out property <length> tip-h: bar.height;
+    out property <string> tip-label: bar.hovered-label;
+    out property <bool> tip-visible: bar.hovered-idx >= 0 && bar.compact;
+
+    vertical-stretch: 0;
+    // **Every gap in this row belongs to a child, not to the layout**, the leading slot's having to
+    // reach zero. The bar-to-input clearance is the stretchy spacer's own floor.
+    spacing: 0px;
+
+    @children
+
+    bar := TabBar {
+        labels: root.tab-labels;
+        icons: root.tab-icons;
+        avail-width: root.content-w - root.search-w - 2 * Theme.pad-md;
+        selected-index <=> root.tab-idx;
+        label-color: root.label-color;
+        active-color: root.active-color;
+        hover-fill: root.hover-fill;
+        divider-color: root.divider-color;
+        selected(i) => {
+            // Direction first, in the same handler that moved the index: Slint re-evaluates a
+            // host's `if` branches next frame, so this lands before the new body mounts.
+            root.tab-enter-from = i > bar.previous-index
+                ? NavEnterFrom.right
+                : NavEnterFrom.left;
+            root.tab-anim-armed = true;
+            root.tab-selected(i);
+        }
+    }
+
+    // The two `pad-md`s the budget reserves, held as this cell's own floor now that the
+    // layout hands out no spacing of its own.
+    Rectangle {
+        horizontal-stretch: 1;
+        min-width: 2 * Theme.pad-md;
+    }
+
+    // Padded to the band the bar keeps clear for its divider, so the input centres on the
+    // tab labels' line rather than on the row's.
+    //
+    // **Collapsed rather than unmounted when `search-shown` is false**, so `search := ` stays
+    // readable from the budget above — an id declared inside an `if` is not. A hidden element draws
+    // nothing and takes no events, so the box is as unreachable as a dropped branch. The three
+    // width constraints are spelled out because an explicit `min-width` is what *replaces* the
+    // constraint the bar's own bound width would otherwise merge in.
+    //
+    // **`visible`, never `clip`.** The cell is exactly as wide as the bar, and the bar's focus
+    // swell and shadow reach past it; a clip shaved the swollen ends flat and cut the glow into a
+    // box. Slint lowers `visible` to a clip that only applies while hidden, which is the whole
+    // collapse this needs.
+    //
+    // **The budget above is deliberately not gated with it.** `search-w` still reserves, so
+    // `TabBar.avail-width` does not move and the bar does not play its 350 ms compact morph on a
+    // frame the box merely went away on. What is freed is dead strip at the row's trailing edge,
+    // which on the one host that hides it is under the action pills anyway.
+    Rectangle {
+        visible: root.search-shown;
+        min-width: 0px;
+        preferred-width: root.search-shown ? search.preferred-width : 0px;
+        max-width: root.search-shown ? search.preferred-width : 0px;
+
+        VerticalLayout {
+            alignment: center;
+            padding-bottom: Theme.pad-sm;
+            search := SearchBar {
+                input-width: root.search-w;
+                text <=> root.filter;
+                placeholder: root.filter-placeholder;
+                blur-trigger: root.blur-tick;
+                edited(t) => { root.search-edited(t); }
+            }
+        }
+    }
+}

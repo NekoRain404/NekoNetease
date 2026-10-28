@@ -1,0 +1,325 @@
+//! Backend-to-UI bridges: the three `Signal` subscribers, the artwork restore's count and the
+//! process-wide toast channel. Plus the memory sampler, whose loop reads the UI.
+//!
+//! Each `Signal` one is a closure over `ui::signal::on_signal`, which owns the subscribe-and-spawn
+//! loop; what is left here is what each one does with the tick.
+
+use std::sync::Arc;
+
+use nekonetease_app::state::AppState;
+use nekonetease_app::tasks;
+use nekonetease_ui::AppWindow;
+use nekonetease_views::ui;
+use slint::ComponentHandle;
+
+/// Keep the Tracks view in sync with scans and watcher batches. The initial `0`
+/// isn't observed — `changed()` only resolves on a real `send_modify` — so this
+/// doesn't race the explicit initial fetch.
+///
+/// Gated on section visibility, because play-count flushes bump this channel
+/// after every track completion: ungated, plain listening re-fetches the whole
+/// library once per song with the view hidden. While hidden the bump folds into
+/// the `TracksUi` dirty flag and the section gate runs one refresh on re-enter.
+pub fn install_library_changed_refresher(
+    state: &AppState,
+    tracks_ui: &Arc<ui::tracks::TracksUi>,
+    weak: slint::Weak<AppWindow>,
+) -> Result<(), nekonetease_core::error::AppError> {
+    let tu = tracks_ui.clone();
+    ui::signal::on_signal(&state.library_changed, weak, "library-changed", move |ui| {
+        if tu.section_active() {
+            ui.global::<nekonetease_ui::Tracks>().invoke_request_refresh();
+        } else {
+            tu.mark_dirty();
+        }
+    })
+}
+
+/// Toast on every kernel-overflow rescan. On the UI thread so it can hold the
+/// non-`Send` `Rc<NotificationsUi>` and resolve its strings at push time, in
+/// whichever locale was active when the rescan fired. Coalesced upstream by the
+/// `watch` slot and by the reconcile's own coalescing, so a burst of overflows still
+/// paints at most one toast per reconcile cycle.
+pub fn install_rescan_notice_subscriber(
+    state: &AppState,
+    weak: slint::Weak<AppWindow>,
+    notifications: std::rc::Rc<ui::shell::notifications::NotificationsUi>,
+) -> Result<(), nekonetease_core::error::AppError> {
+    use nekonetease_ui::{NotificationKind, NotificationVariant, Settings};
+    use ui::shell::notifications::RowText;
+
+    ui::signal::on_signal(&state.rescan_notice, weak, "rescan-notice", move |ui| {
+        notifications.show_localized(
+            ui,
+            NotificationVariant::Info,
+            NotificationKind::LibraryResyncing,
+            |ui| {
+                let g = ui.global::<Settings>();
+                RowText::plain(
+                    g.invoke_library_resyncing_title(),
+                    g.invoke_library_resyncing_message(),
+                )
+            },
+        );
+    })
+}
+
+/// Sticky warning toast when the output device goes away — sticky for the crash
+/// notice's reason: nothing else reports this and playback carries on
+/// regardless, so a notice the user looked away for did nothing. No action
+/// button, there being no device picker to send them to, so the kind only groups
+/// the row for `dismiss_by_kind`.
+pub fn install_audio_device_lost_subscriber(
+    state: &AppState,
+    weak: slint::Weak<AppWindow>,
+    notifications: std::rc::Rc<ui::shell::notifications::NotificationsUi>,
+) -> Result<(), nekonetease_core::error::AppError> {
+    use nekonetease_ui::{NotificationKind, NotificationVariant, Settings};
+    use ui::shell::notifications::RowText;
+
+    ui::signal::on_signal(&state.audio_device_lost, weak, "audio-device-lost", move |ui| {
+        notifications.show_localized(
+            ui,
+            NotificationVariant::Warning,
+            NotificationKind::AudioDeviceLost,
+            |ui| {
+                let g = ui.global::<Settings>();
+                RowText::plain(
+                    g.invoke_audio_device_lost_title(),
+                    g.invoke_audio_device_lost_message(),
+                )
+            },
+        );
+    })
+}
+
+/// Holds an info toast up while a scan restores cover art whose stored file went missing.
+///
+/// A payload loop rather than [`ui::signal::on_signal`]: the boot scan can raise the count before
+/// this attaches, and a tick sent then is never seen where the count is still there to read. Acts
+/// only on the edges, so a second restore joining the first stacks no second card.
+pub fn install_artwork_restore_subscriber(
+    state: &AppState,
+    weak: slint::Weak<AppWindow>,
+    notifications: std::rc::Rc<ui::shell::notifications::NotificationsUi>,
+) -> Result<(), nekonetease_core::error::AppError> {
+    use nekonetease_ui::{NotificationKind, NotificationVariant, Settings};
+    use ui::shell::notifications::RowText;
+
+    let mut restoring = state.artwork_restoring.subscribe();
+    slint::spawn_local(async_compat::Compat::new(async move {
+        let mut shown = false;
+        loop {
+            let active = *restoring.borrow_and_update() > 0;
+            if active != shown {
+                let Some(ui) = weak.upgrade() else { break };
+                if active {
+                    notifications.show_localized(
+                        &ui,
+                        NotificationVariant::Info,
+                        NotificationKind::ArtworkRestoring,
+                        |ui| {
+                            let g = ui.global::<Settings>();
+                            RowText::plain(
+                                g.invoke_artwork_restoring_title(),
+                                g.invoke_artwork_restoring_message(),
+                            )
+                        },
+                    );
+                } else {
+                    notifications.dismiss_by_kind(NotificationKind::ArtworkRestoring);
+                }
+                shown = active;
+            }
+            if restoring.changed().await.is_err() {
+                break;
+            }
+        }
+    }))
+    .map(|_| ())
+    .map_err(|e| nekonetease_core::error::AppError::io("artwork restore subscriber", e))
+}
+
+/// Drain the process-wide `utils::toast` channel on the UI thread.
+///
+/// [`install_rescan_notice_subscriber`]'s shape over an `mpsc` rather than a
+/// `watch` — errors must not coalesce — resolving the localized title by kind at
+/// push time so a failure raised on a tokio worker paints in the locale that is
+/// active when it surfaces. The dynamic detail is shown verbatim.
+/// A notice that states a reason and then leaves. The restriction verdicts, the refusal verdicts
+/// and the quality fallback all read the same way: warning or error, one title, the detail the
+/// caller already has, four seconds.
+fn show_notice(
+    notifications: &ui::shell::notifications::NotificationsUi,
+    variant: nekonetease_ui::NotificationVariant,
+    title: slint::SharedString,
+    detail: &str,
+) {
+    notifications.show_auto_dismiss(
+        ui::shell::notifications::NotificationParams::plain(variant, title, detail.into()),
+        4000,
+    );
+}
+
+pub fn install_toast_bridge(
+    weak: slint::Weak<AppWindow>,
+    notifications: std::rc::Rc<ui::shell::notifications::NotificationsUi>,
+) -> Result<(), nekonetease_core::error::AppError> {
+    use nekonetease_core::utils::toast::{self, ToastKind, ToastRequest};
+    use nekonetease_ui::{NotificationKind, NotificationVariant, Settings};
+    use ui::shell::notifications::{NotificationParams, RowText};
+
+    // First installer owns delivery; a second call (shouldn't happen) is a no-op.
+    let Some(mut rx) = toast::init() else {
+        return Ok(());
+    };
+    slint::spawn_local(async_compat::Compat::new(async move {
+        while let Some(ToastRequest { kind, detail }) = rx.recv().await {
+            let Some(ui) = weak.upgrade() else { break };
+            let g = ui.global::<Settings>();
+            match kind {
+                ToastKind::PlaybackFailed | ToastKind::OperationFailed => {
+                    // Only the title is ours to re-render; the detail is a Rust error
+                    // string that was never translated in the first place.
+                    notifications.show_failure(&ui, move |ui| {
+                        let g = ui.global::<Settings>();
+                        RowText::plain(
+                            match kind {
+                                ToastKind::PlaybackFailed => g.invoke_toast_playback_error_title(),
+                                _ => g.invoke_toast_operation_failed_title(),
+                            },
+                            detail.clone().into(),
+                        )
+                    });
+                }
+                // A restart that had nowhere to relaunch from: no dynamic
+                // detail, and it sticks because it asks the user to do
+                // something rather than reporting what happened.
+                ToastKind::RestartRequired => {
+                    notifications.show_localized(
+                        &ui,
+                        NotificationVariant::Warning,
+                        NotificationKind::None,
+                        |ui| {
+                            let g = ui.global::<Settings>();
+                            RowText::plain(
+                                g.invoke_toast_restart_required_title(),
+                                g.invoke_toast_restart_required_message(),
+                            )
+                        },
+                    );
+                }
+                // A file the user asked to have written. Auto-dismissing: the sheet is the one
+                // they were already looking at, so the toast confirms rather than reports.
+                ToastKind::LyricsSaved => {
+                    notifications.show_auto_dismiss(
+                        NotificationParams::plain(
+                            NotificationVariant::Info,
+                            g.invoke_toast_lyrics_saved_title(),
+                            detail.into(),
+                        ),
+                        4000,
+                    );
+                }
+                // A file the user asked to keep: a success rather than a notice, so the green
+                // variant, and the body is the name the rename-free download finally took.
+                ToastKind::DownloadSaved => show_notice(
+                    &notifications,
+                    NotificationVariant::Success,
+                    g.invoke_toast_download_saved_title(),
+                    &detail,
+                ),
+                // The check-in card shows the new balance beside the button, so this is a
+                // short confirmation with no body.
+                ToastKind::CheckInSucceeded => {
+                    notifications.show_auto_dismiss(
+                        NotificationParams::plain(
+                            NotificationVariant::Info,
+                            g.invoke_toast_check_in_title(),
+                            slint::SharedString::default(),
+                        ),
+                        2500,
+                    );
+                }
+                // A confirmation for something the user just did, so shorter than the
+                // reports above.
+                ToastKind::Copied | ToastKind::NothingToCopy => {
+                    let title = match kind {
+                        ToastKind::Copied => g.invoke_toast_copied_title(),
+                        _ => g.invoke_toast_nothing_to_copy_title(),
+                    };
+                    notifications.show_auto_dismiss(
+                        NotificationParams::plain(
+                            NotificationVariant::Info,
+                            title,
+                            slint::SharedString::default(),
+                        ),
+                        2500,
+                    );
+                }
+                // A restricted start still plays, so this is a notice rather than a failure:
+                // auto-dismissing, and its detail is the track title.
+                ToastKind::TrialPlayback
+                | ToastKind::VipRequired
+                | ToastKind::AlbumPurchaseRequired => {
+                    let title = match kind {
+                        ToastKind::TrialPlayback => g.invoke_toast_trial_playback_title(),
+                        ToastKind::VipRequired => g.invoke_toast_vip_required_title(),
+                        _ => g.invoke_toast_purchase_required_title(),
+                    };
+                    show_notice(&notifications, NotificationVariant::Warning, title, &detail);
+                }
+                // The endpoint withheld the recording rather than the stream failing, so the
+                // detail carries the reason the detail request proved and the title says which
+                // kind of refusal it was.
+                ToastKind::PlaybackNoCopyright | ToastKind::PlaybackUnavailable => {
+                    let title = match kind {
+                        ToastKind::PlaybackNoCopyright => {
+                            g.invoke_toast_playback_no_copyright_title()
+                        }
+                        _ => g.invoke_toast_playback_unavailable_title(),
+                    };
+                    show_notice(&notifications, NotificationVariant::Error, title, &detail);
+                }
+                // A lower tier than the one requested still plays, so this is a notice rather
+                // than a failure; the detail is the served bitrate.
+                ToastKind::QualityDowngraded => show_notice(
+                    &notifications,
+                    NotificationVariant::Warning,
+                    g.invoke_toast_quality_downgraded_title(),
+                    &detail,
+                ),
+                // Auto-dismissing: the music carries on through the shared output, and the
+                // Output settings keep saying why for as long as it stays that way.
+                ToastKind::ExclusiveRefused => {
+                    notifications.show_auto_dismiss(
+                        NotificationParams {
+                            variant: NotificationVariant::Warning,
+                            title: g.invoke_toast_exclusive_refused_title(),
+                            message: g.invoke_toast_exclusive_refused_message(detail.into()),
+                            action_label: g.invoke_toast_exclusive_refused_action_label(),
+                            kind: NotificationKind::ExclusiveRefused,
+                        },
+                        6000,
+                    );
+                }
+            }
+        }
+    }))
+    .map(|_| ())
+    .map_err(|e| nekonetease_core::error::AppError::io("toast bridge", e))
+}
+
+/// Run the memory sampler on the UI thread, where its tag reads the Nav and detail globals with
+/// no atomic shadow. A no-op unless `NEKONETEASE_RSS_SAMPLE` is set.
+pub fn install_rss_sampler(
+    weak: slint::Weak<AppWindow>,
+) -> Result<(), nekonetease_core::error::AppError> {
+    let view_tag = move || weak.upgrade().map(|ui| ui::view_tag::format_view(&ui));
+    let Some(sampler) = tasks::rss_sampler::sampler(view_tag) else {
+        return Ok(());
+    };
+    slint::spawn_local(async_compat::Compat::new(sampler))
+        .map(|_| ())
+        .map_err(|e| nekonetease_core::error::AppError::io("memory sampler", e))
+}

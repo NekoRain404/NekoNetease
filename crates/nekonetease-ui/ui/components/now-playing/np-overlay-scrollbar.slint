@@ -1,0 +1,22 @@
+import { Theme } from "../../theme.slint";
+import { Player } from "../../globals/player.slint";
+import { OverlayScrollbar } from "../overlay-scrollbar.slint";
+
+// The Now-Playing column's scrollbar: an `OverlayScrollbar` tinted with the per-artwork accent, so
+// the bar sits *into* the backdrop blur rather than on top of it.
+//
+// The palette is here because both arms of that column draw the same bar — Up Next and the lyrics
+// sheet — and a tint spelled per arm is one they would come to disagree about.
+//
+// `on-backdrop` is whether there is a backdrop for an accent to sit into. False is the neutral
+// page treatment, which is the miniplayer with its own backdrop switched off. Each pair is
+// restated per branch rather than gated, Slint having no way to apply a property conditionally.
+export component NpOverlayScrollbar inherits OverlayScrollbar {
+    in property <bool> on-backdrop: true;
+
+    track-color: root.on-backdrop ? Player.np-accent-bright : Theme.surface0;
+    track-opacity: root.on-backdrop ? 0.25 : 0.5;
+    track-opacity-active: root.on-backdrop ? 0.4 : 0.85;
+    thumb-color: root.on-backdrop ? Player.np-accent-dim : Theme.surface2;
+    thumb-active-color: root.on-backdrop ? Player.np-accent-bright.transparentize(0.2) : Theme.accent;
+}

@@ -1,0 +1,106 @@
+import { Theme } from "../../theme.slint";
+import { Social } from "../../globals/social.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+import { IconButton } from "../../components/icon-button.slint";
+import { SocialProfileView } from "profile-view.slint";
+import { SocialMessagesView } from "messages-view.slint";
+import { SocialNotificationsView } from "notifications-view.slint";
+
+// The social surface, as a card over the content panel. The Rust side owns `open` and `page`;
+// this file only picks which of the three panes is mounted, so a close drops every loaded model
+// rather than leaving a page behind an invisible card.
+//
+// The backdrop closes on a stray click. An empty `TouchArea` sat on the card fills its own frame,
+// because a bare `Rectangle` passes a click through to the backdrop and would close the card from
+// anywhere no control happened to sit.
+export component SocialOverlay inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: #00000073;
+
+    backdrop := TouchArea {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        clicked => { Social.close(); }
+    }
+
+    card := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(960px, parent.width - 96px);
+        height: min(680px, parent.height - 96px);
+        background: Theme.mantle;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        TouchArea {
+            x: 0;
+            y: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        VerticalLayout {
+            spacing: 0;
+
+            HorizontalLayout {
+                padding-left: Theme.pad-lg;
+                padding-right: Theme.pad-sm;
+                padding-top: Theme.pad-sm;
+                padding-bottom: Theme.pad-sm;
+                spacing: Theme.pad-sm;
+
+                MaterialIcon {
+                    name: Social.page == "profile" ? "person"
+                        : Social.page == "messages" ? "chat" : "favorite";
+                    icon-size: 22px;
+                    icon-color: Theme.accent;
+                }
+
+                Text {
+                    text: Social.page == "profile" ? @tr("Profile")
+                        : Social.page == "messages" ? @tr("Messages") : @tr("Notifications");
+                    color: Theme.text;
+                    font-size: Theme.font-size-lg;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                IconButton {
+                    icon: "close";
+                    tooltip-text: @tr("Close");
+                    clicked => { Social.close(); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border;
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding: Theme.pad-md;
+
+                    if Social.page == "profile": SocialProfileView {
+                        vertical-stretch: 1;
+                    }
+
+                    if Social.page == "messages": SocialMessagesView {
+                        vertical-stretch: 1;
+                    }
+
+                    if Social.page == "notifications": SocialNotificationsView {
+                        vertical-stretch: 1;
+                    }
+                }
+            }
+        }
+    }
+}

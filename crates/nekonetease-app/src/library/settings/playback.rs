@@ -1,0 +1,147 @@
+//! Setters for the Playback tab's Playback and Output cards, plus the persisted
+//! playback speed. Each only commits the disk write: the matching UI callback
+//! applies the runtime side, synchronously for a toggle and on the blocking pool
+//! where it has to wait on the output device.
+
+use crate::library::playback::FOLLOW_RATE_SUPPORTED;
+use crate::services;
+use crate::services::settings::{PausedDevice, SettingsData};
+use nekonetease_core::config::Paths;
+use nekonetease_core::entities::cloud::Quality;
+use nekonetease_core::error::AppError;
+use nekonetease_engine::player::engine::backend::OutputChoice;
+use nekonetease_engine::player::engine::state::{MAX_SPEED, MAX_VOLUME, MIN_SPEED};
+
+/// Persist the user toggle for "Gapless Playback". The runtime effect
+/// (gating `preload_gapless` inside the 500 ms position monitor in
+/// `crates/nekonetease-engine/src/player/engine/handlers.rs`) is applied
+/// synchronously by the UI callback through
+/// `library::playback::player_set_gapless` *before* this async disk write,
+/// so the next staging tick picks up the new value even when the file
+/// rewrite hasn't completed.
+pub fn set_gapless_playback(paths: &Paths, on: bool) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.playback.gapless_playback = on;
+    })
+}
+
+/// Persist the user toggle for hardware video decoding. The runtime side is
+/// `VideoPlayer::set_hwdec`, already applied synchronously by the UI callback, so a failed
+/// write only means the next launch starts on the previous value.
+pub fn set_hwdec_enabled(paths: &Paths, on: bool) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.playback.hwdec_enabled = on;
+    })
+}
+
+/// Persist "Match the File's Sample Rate". The engine already holds the new value through
+/// `library::playback::player_set_follow_rate`, and acts on it at the next track.
+pub fn set_output_follow_rate(paths: &Paths, on: bool) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.output.output_follow_rate = on;
+    })
+}
+
+/// Persist "Give the Device Back When Paused". The engine already holds the new value through
+/// `library::playback::player_set_release_when_paused`, and the monitor reads it on its next tick.
+pub fn set_output_paused_device(paths: &Paths, on: bool) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.output.output_paused_device = PausedDevice::from_toggle(on);
+    })
+}
+
+/// Persist the silence a reopen onto a new rate writes first, which
+/// `library::playback::player_set_resync_hold` already handed the engine.
+pub fn set_output_resync_ms(paths: &Paths, ms: u32) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.output.output_resync_ms = ms;
+    })
+}
+
+/// Persist the whole output choice the engine was just handed, since each of the Output card's
+/// pickers changes one part of it.
+pub fn set_output_choice(paths: &Paths, choice: &OutputChoice) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, |settings| {
+        settings.output.set_output_choice(choice);
+    })
+}
+
+/// Persist what `library::playback::player_make_bit_perfect` just applied, the `volume` it left
+/// included, in one write so a failure can't leave half of it on disk.
+pub fn reset_for_bit_perfect(paths: &Paths, volume: u32) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, |settings| {
+        apply_bit_perfect_reset(settings, volume);
+    })
+}
+
+/// Persist Make Bit-Perfect's switch to exclusive output: the `choice` the engine was handed and
+/// the reset beside it, in the one write [`reset_for_bit_perfect`] takes for the same reason.
+pub fn switch_to_bit_perfect(
+    paths: &Paths,
+    choice: &OutputChoice,
+    volume: u32,
+) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, |settings| {
+        settings.output.set_output_choice(choice);
+        apply_bit_perfect_reset(settings, volume);
+    })
+}
+
+fn apply_bit_perfect_reset(settings: &mut SettingsData, volume: u32) {
+    settings.equalizer.eq_enabled = false;
+    settings.replaygain.rg_enabled = false;
+    settings.playback.playback_speed = 1.0;
+    settings.volume = volume.min(MAX_VOLUME);
+    settings.playback.is_muted = false;
+    if FOLLOW_RATE_SUPPORTED {
+        settings.output.output_follow_rate = true;
+    }
+}
+
+/// Persist the user's "Play Button Animation" pick (None / Equalizer).
+/// The on-disk value stays a string token so future variants can be
+/// added without a migration; anything outside the known set (including
+/// the retired `"ripple"` token) falls back to `"none"` so a malformed
+/// UI write (or a hand-edited `settings.json` with a typo) can't pin the
+/// chip to an unrenderable index. Runtime effect (the `PlayButton`
+/// switching overlays) is reactive off the Slint
+/// `Settings.play-button-animation-idx` property, so the UI already
+/// repainted before this disk write is scheduled.
+pub fn set_play_button_animation(paths: &Paths, mode: String) -> Result<(), AppError> {
+    let token = match mode.as_str() {
+        "none" | "equalizer" => mode,
+        _ => "none".to_owned(),
+    };
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.play_button_animation = token;
+    })
+}
+
+/// Persist the selected `NetEase` stream quality for new cloud playback requests.
+pub fn set_cloud_quality(paths: &Paths, quality: Quality) -> Result<(), AppError> {
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.playback.cloud_quality = quality;
+    })
+}
+
+/// Persist the playback speed so it survives restarts, as repeat, shuffle and volume do. Clamped to
+/// the player's `MIN_SPEED..=MAX_SPEED` here too, so a malformed write can't pin an out-of-range
+/// value the boot restore would then have to clamp.
+///
+/// NaN is refused rather than clamped, unlike the two bounds either side of it: `f64::clamp`
+/// passes it through, `serde_json` writes a non-finite float as `null`, and the next launch fails
+/// to parse `settings.json` and falls back to defaults — one malformed write costing the user
+/// every setting they have. `clamp_preamp` and `clamp_rg_preamp` each carry the same arm.
+pub fn set_playback_speed(paths: &Paths, speed: f64) -> Result<(), AppError> {
+    if speed.is_nan() {
+        return Err(AppError::Validation("Playback speed is not a number".to_owned()));
+    }
+    let speed = speed.clamp(MIN_SPEED, MAX_SPEED);
+    services::settings::mutate_settings(paths, move |settings| {
+        settings.playback.playback_speed = speed;
+    })
+}
+
+#[cfg(test)]
+#[path = "tests/playback_tests.rs"]
+mod tests;

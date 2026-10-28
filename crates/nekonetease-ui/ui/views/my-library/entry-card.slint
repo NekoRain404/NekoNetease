@@ -1,0 +1,60 @@
+import { Theme } from "../../theme.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+
+export component LibraryEntryCard inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> icon;
+    in property <bool> active;
+    callback activated();
+
+    height: 124px;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-action-default => { root.activated(); }
+
+    property <float> press-scale: touch.pressed ? 0.97 : 1.0;
+    animate press-scale {
+        duration: touch.pressed ? 100ms : Theme.dur-med;
+        easing: cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    card := Rectangle {
+        width: parent.width * root.press-scale;
+        height: parent.height * root.press-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 16px;
+        background: touch.pressed ? Theme.surface2 : touch.has-hover ? Theme.surface1 : Theme.surface0;
+        animate background { duration: Theme.dur-fast; easing: ease-in-out; }
+        border-width: root.active ? 2px : 0px;
+        border-color: Theme.accent;
+
+        HorizontalLayout {
+            padding: Theme.pad-lg;
+            spacing: Theme.pad-md;
+            VerticalLayout {
+                alignment: center;
+                MaterialIcon { name: root.icon; icon-size: 36px * root.press-scale; icon-color: Theme.accent; }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.pad-xs;
+                Text { text: root.title; color: Theme.text; font-size: Theme.font-size-lg * root.press-scale; font-weight: 600; overflow: elide; }
+                Text { text: root.subtitle; color: Theme.subtext0; font-size: Theme.font-size-sm * root.press-scale; wrap: word-wrap; }
+            }
+            VerticalLayout {
+                alignment: center;
+                MaterialIcon { name: "play_arrow"; icon-size: 24px * root.press-scale; icon-color: Theme.accent; }
+            }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.activated(); } }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") { root.activated(); return accept; }
+            return reject;
+        }
+    }
+    forward-focus: focus;
+}

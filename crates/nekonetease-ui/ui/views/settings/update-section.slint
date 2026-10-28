@@ -1,0 +1,205 @@
+import { Theme } from "../../theme.slint";
+import { SettingsPage } from "../../globals/settings-page.slint";
+import { NekoNeteaseUpdater } from "../../globals/updater.slint";
+import { SectionCard } from "../../components/settings/section-card.slint";
+import { SectionDivider } from "../../components/settings/section-divider.slint";
+import { SettingRow } from "../../components/settings/setting-row.slint";
+import { SectionButton } from "../../components/settings/section-button.slint";
+import { ProgressBar } from "../../components/settings/progress-bar.slint";
+import { ToggleSwitch } from "../../components/settings/toggle-switch.slint";
+
+// The Software Updates row is always drawn; the rest — up-to-date, installed,
+// available, error — stack under it on their own mutually exclusive conditions.
+//
+// Every one read-binds `NekoNeteaseUpdater` rather than mirroring into local
+// properties, so the section follows backend state without wiring.
+//
+// Search visibility follows `language-section.slint`: each row ANDs its state
+// condition with the predicate, so a query matching the section title still
+// surfaces only the rows whose state is actually true — no up-to-date message
+// on a session with an update pending.
+export component UpdateSection inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    in property <string> tab-name;
+
+    property <string> card-title: @tr("Updates");
+
+    pure function row-visible(label: string, desc: string) -> bool {
+        return SettingsPage.row-visible(root.tab-name, root.card-title,
+                                        label + " " + desc,
+                                        SettingsPage.search-query);
+    }
+
+    property <string> software-label: @tr("Software Updates");
+    property <string> software-desc: @tr("Current version: {}", NekoNeteaseUpdater.current-version);
+    property <string> up-to-date-label: @tr("You're up to date!");
+    property <string> up-to-date-desc: @tr("NekoNetease {} is the latest version.", NekoNeteaseUpdater.current-version);
+    property <string> restart-label: @tr("Update Installed");
+    property <string> restart-desc: @tr("Restart NekoNetease to apply the update");
+    property <string> available-label: @tr("Version {} Available", NekoNeteaseUpdater.available-version);
+    property <string> managed-label: @tr("Updates managed by your package manager");
+    property <string> auto-check-label: @tr("Check for updates automatically");
+    property <string> auto-check-desc: @tr("Once a day, NekoNetease asks GitHub whether a newer version is out.");
+
+    property <bool> show-software: row-visible(software-label, software-desc);
+    // The daily task is already suppressed on a package-managed install, so the switch there would
+    // describe nothing.
+    property <bool> show-auto-check: !NekoNeteaseUpdater.system-managed
+        && row-visible(auto-check-label, auto-check-desc);
+    property <bool> show-up-to-date:
+        NekoNeteaseUpdater.up-to-date && !NekoNeteaseUpdater.update-available && !NekoNeteaseUpdater.restart-needed
+        && row-visible(up-to-date-label, up-to-date-desc);
+    property <bool> show-restart: NekoNeteaseUpdater.restart-needed
+        && row-visible(restart-label, restart-desc);
+    property <bool> show-update-available:
+        NekoNeteaseUpdater.update-available && !NekoNeteaseUpdater.restart-needed
+        && row-visible(available-label, NekoNeteaseUpdater.notes-short);
+    property <bool> show-error: NekoNeteaseUpdater.error-message != ""
+        && row-visible("", NekoNeteaseUpdater.error-message);
+    // A ternary, so each branch's literal stays inside `@tr()` and re-resolves
+    // on a locale switch. The order matches `updater_settings.rs`'s values.
+    property <string> pkg-manager-hint:
+        NekoNeteaseUpdater.platform-kind == "windows"
+            ? @tr("Re-run the latest .msi installer from the Releases page.")
+        : NekoNeteaseUpdater.platform-kind == "macos"
+            ? @tr("Use brew upgrade nekonetease.")
+        : @tr("Use sudo dnf update nekonetease (or your distro equivalent).");
+    property <bool> show-package-managed: NekoNeteaseUpdater.system-managed
+        && row-visible(managed-label, pkg-manager-hint);
+
+    // Gated as a whole rather than per row: an unsupported build has no state worth a card, and
+    // routing it through `has-matches` is also what keeps a search for "update" from landing on
+    // an empty one.
+    out property <bool> has-matches: NekoNeteaseUpdater.updates-supported
+        && (show-software || show-auto-check || show-up-to-date || show-restart
+            || show-update-available || show-error || show-package-managed);
+
+    // Wrapper so the root's preferred-height tracks the card's natural height —
+    // see `language-section.slint`.
+    VerticalLayout {
+    if has-matches: SectionCard {
+        title: root.card-title;
+
+        if root.show-software: SettingRow {
+            icon: "system_update";
+            label: root.software-label;
+            description: root.software-desc;
+            SectionButton {
+                label: NekoNeteaseUpdater.is-checking ? @tr("Checking...") : @tr("Check for Updates");
+                icon: "";
+                primary: false;
+                button-enabled: !NekoNeteaseUpdater.is-checking;
+                clicked => { NekoNeteaseUpdater.check(); }
+            }
+        }
+
+        // The one control for a task that otherwise runs unannounced from the first launch. The
+        // welcome card discloses it too, but a setting needs a permanent home.
+        if root.show-software && root.show-auto-check: SectionDivider {}
+        if root.show-auto-check: SettingRow {
+            icon: "update";
+            label: root.auto-check-label;
+            description: root.auto-check-desc;
+            ToggleSwitch {
+                checked <=> NekoNeteaseUpdater.auto-check-enabled;
+                toggled(v) => { NekoNeteaseUpdater.auto-check-changed(v); }
+            }
+        }
+
+        // Directly under the software row, so it's clear at once why the action
+        // buttons below are missing.
+        if root.show-software && root.show-package-managed: SectionDivider {}
+        if root.show-package-managed: SettingRow {
+            icon: "package_2";
+            label: root.managed-label;
+            description: pkg-manager-hint;
+        }
+
+        if root.show-software && root.show-up-to-date: SectionDivider {}
+        if root.show-up-to-date: SettingRow {
+            icon: "check_circle";
+            label: root.up-to-date-label;
+            description: root.up-to-date-desc;
+        }
+
+        if root.show-software && root.show-restart: SectionDivider {}
+        if root.show-restart: SettingRow {
+            icon: "restart_alt";
+            label: root.restart-label;
+            description: root.restart-desc;
+            SectionButton {
+                label: @tr("Restart Now");
+                icon: "";
+                primary: true;
+                clicked => { NekoNeteaseUpdater.restart(); }
+            }
+        }
+
+        // Install and Skip go when the install path is package-managed: the
+        // available version is still worth showing, but the action isn't ours.
+        if root.show-software && root.show-update-available: SectionDivider {}
+        if root.show-update-available: SettingRow {
+            icon: "new_releases";
+            label: root.available-label;
+            description: NekoNeteaseUpdater.notes-short;
+            // The changelog arrives as one long line; capped to a reading
+            // column it wraps early instead of widening the card.
+            description-max-width: 480px;
+            if !NekoNeteaseUpdater.system-managed: SectionButton {
+                label: NekoNeteaseUpdater.is-installing ? @tr("Installing...") : @tr("Download & Install");
+                icon: "";
+                primary: true;
+                button-enabled: !NekoNeteaseUpdater.is-installing;
+                clicked => { NekoNeteaseUpdater.install(); }
+            }
+            if !NekoNeteaseUpdater.system-managed && !NekoNeteaseUpdater.is-installing
+                    && !NekoNeteaseUpdater.is-critical: SectionButton {
+                label: @tr("Skip this version");
+                icon: "";
+                primary: false;
+                clicked => { NekoNeteaseUpdater.skip(); }
+            }
+        }
+        // Stands in for the absent Skip button, so it's clear why this update
+        // can't be dismissed permanently.
+        if root.show-update-available && NekoNeteaseUpdater.is-critical
+                && !NekoNeteaseUpdater.system-managed: SettingRow {
+            icon: "shield";
+            label: @tr("Critical update");
+            description: @tr("This update fixes a critical issue and can't be skipped.");
+        }
+        if root.show-update-available && NekoNeteaseUpdater.is-installing: Rectangle {
+            background: transparent;
+            VerticalLayout {
+                padding-left: Theme.pad-lg;
+                padding-right: Theme.pad-lg;
+                padding-bottom: Theme.pad-md;
+                spacing: Theme.pad-xs;
+
+                ProgressBar {
+                    value: NekoNeteaseUpdater.download-progress / 100;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Text {
+                        text: NekoNeteaseUpdater.download-progress + "%";
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+            }
+        }
+
+        if (root.show-software || root.show-up-to-date || root.show-restart
+                || root.show-update-available) && root.show-error: SectionDivider {}
+        if root.show-error: SettingRow {
+            icon: "error";
+            label: "";
+            description: NekoNeteaseUpdater.error-message;
+        }
+    }
+    }
+}

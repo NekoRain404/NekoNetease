@@ -1,0 +1,147 @@
+import { Theme } from "../../theme.slint";
+import { CloudAccount } from "../../settings.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+import { SectionButton } from "../../components/settings/section-button.slint";
+import { SectionDivider } from "../../components/settings/section-divider.slint";
+import { SettingRow } from "../../components/settings/setting-row.slint";
+
+// One signed-in device. The confirmation is local and self-releasing, so a click on the
+// wrong row costs nothing beyond the timer.
+component DeviceRow inherits Rectangle {
+    in property <string> label;
+    in property <string> details;
+    in property <bool> current;
+    in property <bool> busy;
+    callback revoke();
+
+    property <bool> confirming: false;
+
+    background: transparent;
+
+    Timer {
+        interval: 4s;
+        running: root.confirming;
+        triggered => { root.confirming = false; }
+    }
+
+    HorizontalLayout {
+        padding: Theme.pad-lg;
+        spacing: Theme.pad-md;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            MaterialIcon {
+                name: root.current ? "person" : "shield";
+                icon-size: 20px;
+                icon-color: Theme.subtext0;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Theme.pad-xs;
+
+            HorizontalLayout {
+                spacing: Theme.pad-sm;
+                Text {
+                    text: root.label;
+                    color: Theme.text;
+                    font-size: Theme.font-size-md;
+                    wrap: word-wrap;
+                }
+                if root.current: Text {
+                    text: @tr("This device");
+                    color: Theme.accent;
+                    font-size: Theme.font-size-sm;
+                    font-weight: 600;
+                }
+            }
+            if root.details != "": Text {
+                text: root.details;
+                color: Theme.text-muted;
+                font-size: Theme.font-size-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        if !root.current: VerticalLayout {
+            alignment: center;
+            SectionButton {
+                label: root.confirming ? @tr("Confirm") : @tr("Sign out");
+                primary: root.confirming;
+                destructive: root.confirming;
+                button-enabled: !root.busy;
+                clicked => {
+                    if root.confirming {
+                        root.confirming = false;
+                        root.revoke();
+                    } else {
+                        root.confirming = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The account's other sessions, inside the NetEase account card. The rows are parallel
+// arrays on `CloudAccount`, so this needs no model type in the main file.
+export component NeteaseDevicesSection inherits VerticalLayout {
+    spacing: 0;
+
+    SectionDivider {}
+
+    SettingRow {
+        icon: "shield";
+        label: @tr("Login devices");
+        description: @tr("Devices signed in to this account");
+        SectionButton {
+            label: @tr("Refresh");
+            icon: "refresh";
+            primary: false;
+            button-enabled: !CloudAccount.devices-busy;
+            clicked => { CloudAccount.refresh-devices(); }
+        }
+    }
+
+    if !CloudAccount.devices-loaded && CloudAccount.devices-busy: VerticalLayout {
+        padding: Theme.pad-lg;
+        Text {
+            text: @tr("Loading devices…");
+            color: Theme.text-muted;
+            font-size: Theme.font-size-sm;
+        }
+    }
+
+    if CloudAccount.devices-loaded && CloudAccount.device-keys.length == 0: VerticalLayout {
+        padding: Theme.pad-lg;
+        Text {
+            text: @tr("No other devices are signed in.");
+            color: Theme.text-muted;
+            font-size: Theme.font-size-sm;
+        }
+    }
+
+    for key[i] in CloudAccount.device-keys: VerticalLayout {
+        if i > 0: SectionDivider {}
+        DeviceRow {
+            label: CloudAccount.device-labels[i];
+            details: CloudAccount.device-details[i];
+            current: CloudAccount.device-current[i];
+            busy: CloudAccount.devices-busy;
+            revoke => { CloudAccount.revoke-device(key); }
+        }
+    }
+
+    if CloudAccount.device-notice != "": VerticalLayout {
+        padding: Theme.pad-lg;
+        Text {
+            text: CloudAccount.device-notice;
+            color: Theme.danger;
+            font-size: Theme.font-size-sm;
+            wrap: word-wrap;
+        }
+    }
+}

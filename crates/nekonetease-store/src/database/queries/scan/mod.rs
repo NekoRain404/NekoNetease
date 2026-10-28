@@ -1,0 +1,95 @@
+//! Scan-time database operations: the three write transactions a library change lands in, and
+//! the upserts, track-row mutations and lookups they are built from.
+//!
+//! [`commit_scan`], [`commit_retag`] and [`apply_watch_batch`] each open, run and commit their own
+//! transaction, and are the only writes here a caller outside the crate can reach: every query that
+//! takes a transaction is `pub(crate)`, so no other crate can compose one. Of the building blocks,
+//! [`upserts`] handles find-or-create on artist / album / genre rows, [`name_cache`] keeps those
+//! answers for the span of a transaction, [`mutations`] holds every track-row write, [`lookups`]
+//! holds the read-side queries, and [`sort_key`] precomputes the `tracks.sort_key` column.
+
+mod finish;
+mod lookups;
+mod mutations;
+mod name_cache;
+mod retag;
+mod sort_key;
+mod upserts;
+mod watch_batch;
+
+pub use finish::commit_scan;
+pub use lookups::get_existing_track_summaries_for_folder;
+pub(crate) use lookups::{
+    find_folder_for_path, get_all_track_paths_for_folder, get_track_id_by_path,
+    track_exists_by_path,
+};
+pub use mutations::{INSERT_CHUNK_ROWS, NewTrackRow};
+pub(crate) use mutations::{
+    delete_track_by_path, delete_tracks_by_paths_batch, insert_track, insert_tracks_batch,
+    prune_orphans, roll_up_covers, update_album_artwork_from_tracks, update_track_location,
+    update_track_metadata,
+};
+pub(crate) use name_cache::NameCache;
+pub use retag::{Retag, RetaggedFile, commit_retag};
+pub use sort_key::to_natural_sort_key;
+pub(crate) use upserts::upsert_album;
+pub use upserts::{CreditDetails, album_artist_name_for, album_credit_for};
+pub use watch_batch::{FailedChange, WatchedChange, apply_watch_batch};
+
+/// Resolved foreign-key IDs for a track being inserted during a scan.
+#[derive(Clone, Copy)]
+pub struct ResolvedIds {
+    pub artist_id: i64,
+    pub album_id: Option<i64>,
+    pub genre_id: Option<i64>,
+    pub folder_id: i64,
+}
+
+/// Resolve a path's library-folder + artist/album/genre rows, upserting any
+/// missing rows. Returns `None` (with a debug log under `context`) when the
+/// path is not inside any library folder — callers should short-circuit.
+///
+/// Shared by the file-event reconcile path and the tag-edit orchestrator: both
+/// need the same folder lookup + FK upsert sequence before writing a track row.
+pub(crate) async fn resolve_track_context(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    path: &std::path::Path,
+    path_str: &str,
+    meta: &nekonetease_core::entities::scan::ExtractedMetadata,
+    context: &str,
+    names: &mut NameCache,
+) -> Result<Option<ResolvedIds>, nekonetease_core::error::AppError> {
+    let Some(folder_id) = find_folder_for_path(tx, path_str).await? else {
+        log::debug!("{context} file not in any library folder, skipping: {}", path.display());
+        return Ok(None);
+    };
+
+    // The **first** credited name, not the whole credit line: an `artists` row named
+    // "X feat. Y" is the bug this replaced, and it was one every multi-artist file created.
+    let artist_name = meta.artist.primary_name();
+    let album_name = meta.album.as_deref().unwrap_or("");
+    // The first genre for the same reason: `tracks.genre_id` is the primary one, and the rest
+    // reach the library through `track_genres`.
+    let genre_name = meta.genres.primary().unwrap_or("");
+
+    let artist_id = names.artist(tx, artist_name, 1).await?;
+    // Group the album by its album-artist (falling back to the track artist when no
+    // album-artist tag is present) so a per-track featured credit ("X & Y") doesn't
+    // split the album into a second row.
+    let album_artist_name = album_artist_name_for(meta);
+    let album_artist_id = if album_artist_name == artist_name {
+        artist_id
+    } else {
+        names.artist(tx, album_artist_name, 1).await?
+    };
+    let album_credit = album_credit_for(meta);
+    let album_id =
+        upsert_album(tx, album_name, album_artist_id, &album_credit, meta, names).await?;
+    let genre_id = names.genre(tx, genre_name).await?;
+
+    Ok(Some(ResolvedIds { artist_id, album_id, genre_id, folder_id }))
+}
+
+#[cfg(test)]
+#[path = "../tests/scan_tests.rs"]
+mod tests;

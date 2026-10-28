@@ -1,0 +1,266 @@
+---
+paths:
+  - crates/nekonetease-app/src/library/**/*.rs
+  - crates/nekonetease-store/src/database/**/*.rs
+  - crates/nekonetease-core/src/entities/**/*.rs
+  - crates/nekonetease-store/src/media/ingest/**/*.rs
+  - crates/nekonetease-artwork/src/media/image/**/*.rs
+  - crates/nekonetease-app/src/tasks/**/*.rs
+  - crates/nekonetease-core/src/utils/audio_ext.rs
+  - crates/nekonetease-core/src/utils/self_writes.rs
+  - crates/nekonetease-views/src/ui/playlists/callbacks/**/*.rs
+  - migrations/**/*.sql
+  - crates/nekonetease-ui/ui/components/dialog/smart-playlist-editor-body.slint
+  - crates/nekonetease-ui/ui/components/dialog/tag-editor-body.slint
+---
+
+# The library — scan, projections, and the write-through paths
+
+The backend data model and the four features that write back into user files or into virtual
+membership. The per-crate mechanics live elsewhere and load on the same reads: `sqlx.md` for query
+shape, `lofty.md` for tag access, `blake3.md` for hashing, `rayon.md` for the parallel walk.
+
+## Scan and change signalling
+
+- **Scan ingest is chunked + batched.** A scan parses and ingests `TX_CHUNK_FILES` files at a
+  time, each chunk in its own write transaction. The writer connection frees between chunks, and
+  a bulk scan's (`to_scan > SCAN_BULK_THRESHOLD`) per-chunk stats-trigger drop/create stays
+  crash-safe. Inserts are multi-row `INSERT … RETURNING id, file_path` via
+  `insert_tracks_batch` — ids mapped back **by path**, RETURNING order being unspecified while
+  DnD import relies on input order. Small deltas keep the stats triggers enabled and skip
+  `recalculate_all_stats` entirely. Orphans, the cover roll-ups (`queries::scan::roll_up_covers`)
+  and the recalc land in one final tx; `library_changed` bumps once after it.
+
+- **The artwork sweep runs *after* that tx commits, never inside it** (`tasks::artwork_sweep`,
+  spawned beside `retroactive_hash`, and once per launch, since a launch with no library scans
+  nothing). It deletes by reference rather than by refcount, argued in
+  `docs/adr/`. Two gates, both required: the name has to parse back into the scheme
+  `media::image::artwork` writes, and nothing in the reference set may name it. **That set is six
+  columns** — `tracks.artwork_path`, `albums.artwork_path`, `artists.image_path`,
+  **`playlists.thumbnail_path`**, **`radio_stations.artwork_path`** and
+  **`radio_logo_answers.artwork_path`**. The last three are the ones that bite, each reachable
+  through no other row: dropping the playlist arm blanks every custom mosaic, and dropping either
+  radio arm deletes a station logo that came off a third-party host and can never be re-derived.
+  The logo-answers arm is the one entry that is not a row the user owns — a browsed station's logo
+  is held alive by its cache row alone, so the sweep has to see it or the cache is left naming a
+  file the sweep just deleted. That also fixes an order: `tasks::radio_logo_cache` drops expired
+  rows *before* the sweep runs, or every one of them still counts as referenced and the store
+  never shrinks. A one-hour grace window covers the file a tag edit or scan worker has
+  written but not yet committed a row for, and **an orphan it spares brings the sweep back once
+  the hour is up**, a library with nothing left to scan running no other. **A folder removal
+  skips the window** (`artwork_sweep::retire_released`): it reads the reference set ahead of the
+  delete and retires what that named and the set after it doesn't, every such file having been
+  named by a committed row, so a library removed seconds after its scan takes its covers with it.
+  `queries::artwork` owns the read
+  side, the `UPDATE`s the renormalize pass re-points with and the ones the repair below clears
+  with, pinned against one column ledger — a missing column is silent one way and destructive the
+  other.
+
+- **Every scan entry repairs before it walks, and the repair is the sweep's inverse**
+  (`library::scan::repair`): references to a stored file that is gone are cleared. The album and
+  artist refills fill an empty column and leave a set one alone, and the size-and-mtime gate never
+  re-reads an unchanged track, so a path to a deleted cover used to survive any number of rescans.
+  A cleared track also loses its `date_modified`, `tasks::tag_backfill`'s lever, so the scan
+  behind it re-extracts the cover. Library columns only: radio's two heal through
+  `library::radio`.
+  **Mid-session the trigger is a cover cache**, in either of two crates that may not name the
+  library: a decode that finds the file missing reports over `utils::missing_artwork`, and
+  `tasks::artwork_restore` starts the same reconcile. `media::image::decoded` is what lets the
+  restored cover paint without a restart, a cached *missing* answer lapsing once the file is back
+  where a *broken* one stays settled.
+
+- **`stats_changed` vs `library_changed`.** Play-count flushes bump the stats channel only;
+  its three subscribers are Favorites (hero mosaic + Most Played rank by `play_count`),
+  Recently-Played (ordered by `last_played`, written on the same flush) and Playlists, for the
+  smart lists whose rules read play stats. Everything structural —
+  scans, watcher, imports, favorite toggles — stays on `library_changed`.
+
+- **No folder is added on its own.** A fresh install starts empty, and the welcome card's first
+  panel offers the platform's Music folder beside the picker, wherever adding it wouldn't be
+  refused. A folder around ones already in the library deletes none of them: its first completed
+  scan absorbs them, tracks and stats intact (`library::scan::finish::absorb_nested`).
+  Every launch with watching on, `tasks::resume_watching::run` starts the watcher and calls
+  `reconcile_watched_folders`, which re-runs `library::scan`'s folder scan over every enabled folder
+  — so a normal boot scans each folder once more to catch changes made while closed. That reconcile
+  is the scan path's *common* case (almost nothing to re-parse), which is why its incremental
+  filter is the part worth keeping fast. With watching off a launch scans only the imports a quit
+  cut short (`library::scan::finish_interrupted_imports`, the folders no scan has completed), so a
+  cover gone while the app was closed waits for a cache to report it, which starts the same
+  reconcile.
+
+- **One audio-extension predicate: `utils::audio_ext::is_audio_extension(ext)`.** Case-folded
+  (`eq_ignore_ascii_case` against ASCII `AUDIO_EXTENSIONS`), allocating nothing — the library walk
+  asks it for *every* file in the tree. The walk, the watcher's `is_audio_file`, DnD/import
+  validation and Browse all route through it; don't re-roll `ext.to_lowercase()` +
+  `AUDIO_EXTENSIONS.contains(...)` at a new call site.
+
+- **Two entry points into extraction, and the scan paths take the lenient one.**
+  `metadata::extract_or_filename_row` keeps a filename-derived row for a file whose tags won't
+  parse, which is the only way Matroska and CAF reach the library at all; both scan sites use it
+  (`scanner::scan_files_parallel`, `file_event_processor::reconcile`), so an `Err` there now means
+  a file that can't be *read*. `extract_metadata` stays strict, and the tag-write re-read
+  depends on that: a row built from a parse that didn't happen would blank the track
+  instead of reporting the failure. Duration on a fallback row comes from
+  `player::file_decode::probe_duration`, the one edge `media/` has into `player/`. Each half is
+  argued at its own definition, including why identification is `FileType::from_buffer` and never
+  lofty's junk-tolerant `Probe::guess_file_type`.
+
+- **Derive `date_modified` from a `Metadata` you already hold.**
+  `metadata::date_modified_from_metadata(&meta)` is the single source of the stored RFC-3339 mtime
+  string and `scanner::track_is_current` compares against it byte-for-byte, so a second
+  `fs::metadata` risks size and mtime coming from different instants. Load-bearing on the
+  **watcher paths**: `update_track_location` (re-point on move/rename) writes mtime but **not**
+  size or hash, so a mtime re-read at write time would land beside the *previous* scan's size, and
+  an in-place tag edit that didn't change the size would then read as current to `track_is_current`
+  on every later scan. Hence a watcher batch re-points with the mtime off the `ExtractedMetadata` it already
+  extracted (an older mtime only fails toward a re-parse, the safe direction), argued on
+  `queries::scan::WatchedChange::Renamed`, and `retroactive_hash` gets its mtime from the same
+  `fs::metadata` that proved the file exists. `extract_date_modified(path)` is the fallback for the
+  one case with nothing in hand, a rename whose extraction failed or whose target vanished, and the
+  reconcile task resolves it before the batch reaches the store, so nothing inside the write
+  transaction `stat`s a file.
+
+## Query shape
+
+- **`nekonetease_store::database::placeholders(n)` for IN-clause lists.** Single-pass,
+  capacity-preallocated; don't re-roll `repeat_n("?", n)…join`. Pair with `chunked_in_query`.
+  Tuple-row CTE UPDATEs follow the `batch_update_hashes` / `flush_artwork_backfill` shape — one
+  chunked UPDATE per N rows, not N UPDATEs. Runtime-built SQL `String`s (placeholder lists, column
+  projections) are wrapped in `sqlx::AssertSqlSafe(sql)` at the query call site (sqlx 0.9
+  `SqlSafeStr`) — data never rides in the string, only through `.bind()`.
+
+- **Track projections by use case**, each with a column list in `queries::track::columns`:
+  `TrackSummary` (17 cols; queue/NP/playback, incl. 4 ReplayGain + `rating`); `TrackListRow` (20;
+  lists incl. Files/Browse, which render through the shared `TrackList` so there is no narrower
+  browse slice; incl.
+  `rating`); `TrackMeta` (8; NP chips); `TagEditRow` (36; Edit-Tags dialog — the only production
+  by-id multi-fetch, every single-valued tag column + the technical Summary cols); `PlaylistExportRow` (5;
+  `file_path`/`file_hash`/`title`/`artist`/`duration_ms`, M3U8 export only); `Track` (60; scan
+  ingest, hash backfill, detail, fixtures). Pick the slimmest — `SELECT *` into `Track` for a list
+  view costs ~40 unused decodes/row.
+
+  - **The multi-valued fields are deliberately absent from `TagEditRow`**, and a widening that puts
+    one back is the regression. Artists, genres and role credits are rows (`track_artists`,
+    `track_genres`, `track_credits`), each with a rendered column beside them (`tracks.artist`,
+    `.genre`, `.credits`) that exists for the FTS index and the display surfaces. The dialog reads
+    the rows, through `queries::track::get_track_{credits,role_credits,genres}_by_ids`: an editor
+    populated from the rendered line splits `Chanson, Francaise` into two genres and saving makes
+    that permanent.
+
+  - **The other half of narrowing is `ui::track_list_cache`**: the two views that retain a whole
+    list resident (My Library's Songs tab, Favorites') keep *converted* rows rather than
+    `TrackListRow`s, so the columns a list doesn't render are freed at fetch rather than held for
+    the session. **Recently Played's Songs tab retains a list too and deliberately stays off it** —
+    `get_recently_played` is capped at 200 rows, so what the cache is for (a resident set whose
+    second copy in the Slint model is the larger half of the view's footprint) doesn't apply, and
+    it keeps the plain `Mutex<Vec<TrackListRow>>` plus `track_matches`. An *uncapped* fourth view
+    belongs on the cache, not on a sixth projection.
+
+  - **It is also why the whole-table fetches take no sort**: `get_all_tracks_for_list` and
+    `get_favorite_tracks_for_list` lost their `sort_by`/`sort_dir` when their callers started
+    re-permuting retained rows through `ui::track_sort`, and the eight-arm `track_list_order_by`
+    behind them went with them — one fixed `TRACK_LIST_ORDER` const in its place, argued at its
+    definition. Don't reintroduce a sort parameter for a fifth caller; retain and permute like the
+    other two.
+
+  - **Which makes a `for_list` query's own `ORDER BY` dead, and copying one the trap.** Every
+    detail view re-sorts what it fetched, so that clause decides nothing there.
+    `queries::track::entity_ids`, which answers what a card's right-click Play queues, has no
+    re-sort behind it and its clause is the whole answer. The two have to agree on the page's
+    **default** and can agree on nothing else, `resolve_view_sort` reading a field the user
+    persisted into `views.json`. Short of that they disagree from the first row: the same set
+    plays in one order from the page and another from the card beside it, which is what shipped:
+    `sort_key` where Artist and Genre Detail default to `"album"`, and bare nullable columns where
+    `ui::track_sort` maps an untagged track to `i32::MAX` and SQLite sorts NULL first. **Neither
+    crate can check it**, `nekonetease-store` being unable to name `nekonetease-views` and the comparator
+    being Rust against SQL, so the pin is `crates/nekonetease/tests/cross_tier.rs`'s
+    `a_card_queues_its_{artist,genre,album}_in_the_order_the_page_shows_it`: it asks both sides over
+    a library built out of the partitions they answer differently, a tidy fixture agreeing by
+    accident. A new batch-action query states which arm it reproduces and joins that walk. **The
+    page's own default is the other half and moves separately**, so it is read off each detail
+    file's `resolve_view_sort` literal beside them.
+
+- **`tracks_fts` indexes eight columns, and adding a ninth is a migration, not an edit.** fts5 has
+  no `ALTER`, so a change means dropping the table plus all three triggers and rebuilding.
+  The **newest** migration to have rebuilt it carries the column list, the tokenizer and the bm25
+  weights with the argument for each, which is `20260910000000` and was `20260802000001` before it
+  — a rebuild moves that text rather than amending it, so read the latest one;
+  `crates/nekonetease-store/src/database/queries/search.rs` carries the query shape and the folding
+  asymmetry. Two things neither of them can tell you: **a ninth column is two edits**, since the
+  per-view filter boxes never touch this index and walk in-memory caches through
+  `ui::row_match::search_fields`, which mirrors the column list by hand
+  (`.claude/rules/ui-patterns.md` owns that side, including the two places the answers deliberately
+  diverge); and **nothing outside that migration and `search_tests` may name a shadow table**,
+  `tracks_fts_{data,idx,docsize,config}` being fts5's private storage, taking no foreign key and
+  none of it droppable, `_docsize` least of all since bm25 reads it.
+
+## Ratings
+
+- `tracks.rating` remains for imported tags and existing smart-playlist criteria. The UI no longer
+  offers rating controls, rating-based smart-playlist choices, or rating tag write-back settings;
+  keep the stored column and legacy smart-playlist evaluation readable for existing libraries.
+
+## Write-through to files
+
+- **Tag editing = "Edit Track Information", write-through the scan pipeline**
+  (`crates/nekonetease-app/src/library/tags.rs::apply_tag_edit`, `crates/nekonetease-store/src/media/ingest/tag_writer.rs`). Right-click rows → **Edit
+  Tags…** (`DialogKind.edit-tags`); **batch is the point** — **touched-tracking is a
+  Rust-side diff against a populate-time snapshot** (Keep/Clear/Set), so only changed fields write.
+  **Lyrics live in the file, not the DB** (single-track tab only), though the tab is no longer their
+  only reader: `library::lyrics` resolves a sidecar, this tag and a fetched-sheet store for the Now
+  Playing panel, and hands the tab that same reading as an *Insert found lyrics* offer above the
+  field. The writer always targets the **primary tag type** (never `first_tag_mut()` — an ID3v1-only
+  MP3 would drop album-artist/composer/BPM/lyrics); BPM writes `IntegerBpm` **and** `Bpm`; **M4A
+  `Ilst` flattens every `pic_type` to `Other`**, so `clear_front_cover` must remove *both*
+  `CoverFront` and `Other` or Replace/Remove silently revert. Cover picks decode-validate up front, so a corrupt pick fails
+  the batch before any file is touched — that half is `media/ingest/cover_embed.rs`, which is about
+  pixels where the writer beside it is about keys, and which owns the bounds a picked image is
+  fitted to and the rule that a re-encode may never hand back more bytes than it was given. After the write it's the scan pipeline: re-extract via
+  `extract_metadata` (**never hand-build the UPDATE** — a fresh mtime beside a stale hash is the
+  one state `track_is_current` can't repair) → `update_track_metadata`. Own writes stay out of the
+  watcher via `SelfWrites` (TTL 30 s, `mark` per-file *before* its write). Post-commit refresh is
+  the `library_changed` bump, **not** an optimistic patch — a retag can change list membership.
+
+- **A release-level tag is written per *file* and read off `albums`.** Label, catalog number,
+  barcode, medium, release type, country and the compilation flag describe the release, and every
+  one of its tracks carries a copy, so the dialog folds them across the selection with `common_str`
+  and writes them back to every selected file. Two consequences that neither half can state alone.
+  **`upsert_album` can raise one and cannot lower one** — its `COALESCE` discards the NULL a
+  cleared field arrives as, and the compilation flag's `OR` is worse still — so emptying one is
+  `queries::album::clear_release_tags`, running after every upsert of the commit. And **editing a
+  subset of a release is not durable**: the untouched files still carry the old value, and the next
+  re-ingest of any of them puts it back. Select the whole release, or expect it back.
+
+- **Playlist import/export = Extended M3U8** (`crates/nekonetease-app/src/library/playlist_files.rs` + the pure `m3u`
+  submodule, hand-rolled writer/parser, and the `archive` submodule, the one place the `zip` crate
+  is named; the module doc argues the one-file-per-playlist shape). Writer emits
+  `#EXTM3U`/`#PLAYLIST:`/`#EXTINF:` + a custom `#NEKONETEASE-HASH:<blake3>` line + an absolute native
+  path, parser tolerantly ignores unknown `#` comments and a leading BOM. Import is
+  **skip-and-report**: re-match each entry by `file_path` then BLAKE3 `file_hash`, always **create
+  a new playlist** (the name isn't unique), count misses; never auto-imports on-disk files. UI is
+  the Import / Export pills in the My Library band's Playlists-tab row
+  (`crates/nekonetease-ui/ui/views/my-library/tab-pills.slint`), callbacks in
+  `crates/nekonetease-views/src/ui/playlists/callbacks/files/`. A **tag edit rewrites the file and changes its
+  `file_hash`**, so a previously exported `#NEKONETEASE-HASH` line goes stale — the `file_path`-first
+  re-match degrades gracefully, but re-export after retagging if hash portability matters.
+
+## Smart playlists
+
+- **Smart / dynamic playlists = virtual, criteria-derived membership**
+  (`crates/nekonetease-core/src/entities/smart_criteria.rs`, `crates/nekonetease-store/src/database/queries/smart_playlist.rs`,
+  `crates/nekonetease-app/src/library/smart_playlists.rs`). `playlists.is_smart` + `smart_criteria TEXT` store a JSON
+  `SmartCriteria` rule set instead of `playlist_items` — **resolved at read time**, never
+  materialized (updates live). `#[serde(default)]` + a `version` field keep it forward-compatible.
+  The evaluator builds WHERE via `sqlx::QueryBuilder` — **only** enum-derived
+  `&'static str` fragments are `push`ed; every user value goes through `push_bind`. **The UI reuses
+  the same grid + detail** (My Library's Playlists tab, where the retired nav 7 folds):
+  `PlaylistRow.is_smart` **gates off every manual-membership edit** — reorder, remove, file-drop,
+  Add-to-Playlist, adding being a write of orphan `playlist_items` a smart list never reads.
+  `DurationMs` stores **whole seconds**, scaled ×1000 to the ms column. A **`stats_changed`
+  subscriber** gated on `has_stat_dependent_smart_playlists()` recounts only smart lists whose
+  criteria `depends_on_play_stats`. `rating` rules need the **full** `idx_tracks_rating` (a partial
+  `WHERE rating > 0` index is *not* used for `rating >= N`). **Load-bearing index alignment:** the
+  editor's inline `@tr` dropdown arrays mirror the const arrays in `entities::smart_criteria`
+  (`FIELDS`/`ops_for`/`MATCH_MODES`/`LIMIT_ORDERS`) **by position** — `smart_criteria_tests`
+  `include_str!`s the `.slint` and pins order + length so drift fails the build. New globals must
+  be in `app-window.slint`'s import **and** `export {}` or Slint prunes them from the Rust API.

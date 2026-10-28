@@ -1,0 +1,703 @@
+import { Theme } from "../../theme.slint";
+import { TrackListRow, TrackColumns, TrackColumnLayout } from "../../models.slint";
+import { RowCovers } from "../../globals/tracks.slint";
+import { MaterialIcon } from "../material-icon.slint";
+import { ArtworkImage } from "../artwork-image.slint";
+import { TrackContextMenu } from "track-context-menu.slint";
+import { CloudTrackContextMenu } from "cloud-track-context-menu.slint";
+import { CloudTrackActions } from "../../globals/cloud-track-actions.slint";
+import { DataCell } from "track-list-cell.slint";
+import { Checkbox } from "../checkbox.slint";
+import { SelectionPill } from "selection-pill.slint";
+import { Tooltip } from "../tooltip.slint";
+
+// One body row in a track table. The outer Rectangle is the virtualizer slot — `Theme.row-h` plus
+// `Theme.row-gap`, so a row leaves a gap without painting over the next one; the inner `chrome`
+// Rectangle is the visible pill and owns the TouchArea, cell layout and context popup. Anything
+// deriving a row pitch reads `Theme.track-row-pitch`; column widths and visibility arrive as `in`
+// properties.
+export component TrackListRowItem inherits Rectangle {
+    in property <TrackListRow> row-data;
+    in property <int> row-index;
+
+    // The list's visibility flags and the `layout` it resolved from them, the one the header places
+    // its cells by.
+    in property <TrackColumns> columns;
+    in property <TrackColumnLayout> layout;
+
+    // `"track_number"` shows the real album track number (Album Detail only); `"index"` the 1-based
+    // position in the current view, counting down N..1 under a descending `#` sort so the column
+    // reads as sorted — which is why the row needs the sort state and the list length.
+    in property <string> number-mode: "index";
+    in property <string> sort-field;
+    in property <string> sort-dir;
+
+    // Rows matching it flip their cells to accent. Handed down rather than read off
+    // `Player` so the component stays reusable with no implicit dependencies.
+    in property <int> playing-track-id;
+    in property <string> playing-remote-id;
+
+    // Cloud hosts own activation and likes through the exact remote ID. They share the
+    // row visuals, but local selection and SQLite context actions do not apply.
+    in property <bool> cloud-row: false;
+    in property <bool> cloud-entity-links: false;
+    in property <bool> single-click-play: true;
+    in property <bool> favorite-clickable: true;
+    in property <bool> cloud-playlist-editable: false;
+    // An owned cloud playlist's explicit moves; Rust refuses one under a display sort or filter.
+    in property <bool> cloud-playlist-reorderable: false;
+
+    // Merge contiguous selected rows into one continuous pill: top corners square when
+    // the row above is selected, bottom when the row below is. `TrackList` computes both
+    // from `rows[idx ± 1].selected`, keeping this component loop-agnostic.
+    in property <bool> prev-selected;
+    in property <bool> next-selected;
+
+    // Derived state.
+    property <bool> playing: root.cloud-row
+        ? root.playing-remote-id != "" && root.row-data.remote_id == root.playing-remote-id
+        : root.row-data.id == root.playing-track-id;
+    property <bool> selected: root.row-data.selected;
+    // Once the view holds a selection the row body picks too. The first pick stays the box's,
+    // which is what keeps an idle list from selecting by accident.
+    property <bool> selecting: root.view-selected-ids.length > 0;
+    // Shift as it stood on the press the pick is about to complete; see `touch.clicked`.
+    property <bool> press-shift;
+    property <length> press-link-x;
+    // Disk-only Browse rows arrive `enabled == false` — dimmed, and swallowing every
+    // interaction: row body, # checkbox, favourite button and right-click menu alike.
+    property <bool> enabled: root.row-data.enabled;
+    // The dimming, through each brush rather than `opacity`, which would render every dimmed row
+    // into a texture of its own for as long as it stays dimmed.
+    property <float> fade: root.enabled ? 1.0 : Theme.fade-disk-only;
+    // Every cell's colour. The body-copy rung, not the muted one: muted, a cell fell under 4.5:1 on
+    // macOS Light and sat exactly on it under two other light variants. The whole list, header
+    // included, is on this one rung, and hierarchy comes from size and weight instead.
+    property <brush> ink: (root.playing ? Theme.accent : Theme.text).transparentize(1.0 - root.fade);
+    // Local list rows navigate by SQLite IDs; cloud rows use exact service IDs and only expose
+    // these links in hosts that opt in (currently Favorites).
+    property <bool> artist-link-enabled: root.enabled && root.columns.show_artist
+        && (root.cloud-row
+            ? root.cloud-entity-links && root.row-data.artist_remote_id != ""
+            : root.row-data.artist_id > 0 && root.view-context != "artist-detail");
+    property <bool> album-link-enabled: root.enabled && root.columns.show_album
+        && (root.cloud-row
+            ? root.cloud-entity-links && root.row-data.album_remote_id != ""
+            : root.row-data.album_id > 0 && root.view-context != "album-detail");
+    // Use the cell's full bounds for hit testing. The rendered label is what the user aims at,
+    // and the cell width already follows the same layout as the header and the text itself.
+    property <bool> artist-link-hovered: root.artist-link-enabled && root.columns.show_artist
+        && touch.has-hover
+        && touch.mouse-x >= root.layout.artist_x
+        && touch.mouse-x < root.layout.artist_x + root.layout.artist_w;
+    property <bool> album-link-hovered: root.album-link-enabled && root.columns.show_album
+        && touch.has-hover
+        && touch.mouse-x >= root.layout.album_x
+        && touch.mouse-x < root.layout.album_x + root.layout.album_w;
+    property <bool> artist-link-pressed: root.artist-link-enabled && root.columns.show_artist
+        && root.press-link-x >= root.layout.artist_x
+        && root.press-link-x < root.layout.artist_x + root.layout.artist_w;
+    property <bool> album-link-pressed: root.album-link-enabled && root.columns.show_album
+        && root.press-link-x >= root.layout.album_x
+        && root.press-link-x < root.layout.album_x + root.layout.album_w;
+
+    // Drives context-menu entry visibility and the Add-to-Playlist sub-list's exclusion. One of
+    // "tracks", "album-detail", "artist-detail", "genre-detail", "playlist-detail", "browse",
+    // "favorites", "search"; empty means no suppression.
+    in property <string> view-context;
+    // Set only under `view-context == "playlist-detail"`, so the picker can filter it out. 0 = none.
+    in property <int> current-playlist-id: 0;
+    // Mirror of the per-view global's `selected-ids`, which is how the menu decides between the
+    // right-clicked row and the whole selection. Multi-mode needs this row selected *and* more
+    // than one entry — right-clicking an unselected row falls back to that row alone.
+    in property <[int]> view-selected-ids;
+
+    // Drag-reorder, opt-in via `enable-drag`; `TrackList` and every other consumer leave it off and
+    // pay nothing. On, the row's own `touch` also tracks press → move → release — a wrapping or
+    // sibling TouchArea can't, Slint's deepest-wins routing delivering press/up exclusively to
+    // `touch` while the outer one sees only `moved`, so a drag started and never cleaned up. The
+    // shared state lives on `DraggableTrackList` through two-way `drag-source` / `drop-slot`.
+    in property <bool> enable-drag: false;
+    in property <int> row-count: 0;
+    in property <length> list-y0: 0px;
+    in property <length> list-height: 0px;
+    in property <length> list-viewport-y: 0px;
+    in-out property <int> drag-source: -1;
+    in-out property <int> drop-slot: -1;
+    // Per-row drag state — meaningful only while `enable-drag` is on and this row is
+    // pressed.
+    property <length> drag-press-abs-y;
+    property <bool> drag-started: false;
+    property <length> drag-cur-abs-y: 0px;
+    property <length> pitch: Theme.track-row-pitch(root.columns.show_artwork);
+    // Slot math: list-relative pointer Y → row index → upper/lower half → slot in
+    // `0..=row-count`.
+    property <length> drag-cur-list-y:
+        root.drag-cur-abs-y - root.list-y0 - root.list-viewport-y;
+    property <int> drag-cur-row: clamp(
+        Math.floor(root.drag-cur-list-y / root.pitch),
+        0,
+        max(0, root.row-count - 1),
+    );
+    property <bool> drag-upper-half:
+        (root.drag-cur-list-y - root.drag-cur-row * root.pitch)
+            < root.pitch / 2;
+    property <int> drag-computed-slot: clamp(
+        root.drag-upper-half ? root.drag-cur-row : root.drag-cur-row + 1,
+        0,
+        root.row-count,
+    );
+
+    callback double-clicked-row();
+    callback clicked-row();
+    callback toggle-favorite();
+    callback remove-cloud-row(string /*remote_id*/);
+    callback move-cloud-row(string /*remote_id*/, int /*delta*/);
+    callback play-row(int /*track_id*/, int /*index*/);
+    // Batch-shaped: a single-row click emits a 1-element array, a multi-select
+    // right-click the whole `view-selected-ids`. One signature for both spares the Rust
+    // handlers a single/batch dispatch branch.
+    callback play-next([int]);
+    callback add-to-queue([int]);
+    callback toggle-row-favorite([int] /*track_ids*/, bool /*new_state*/);
+    callback select-row(int /*idx*/, int /*id*/, bool /*shift*/, bool /*ctrl*/);
+    // Raised by the context menu; the view that owns the set answers them.
+    callback select-all();
+    callback clear-selection();
+    // The box and the row body both pick through here. Ctrl is forced on whenever shift isn't
+    // held, so the backend's "replace selection" branch is unreachable from either and a pick on
+    // a selected row always removes it.
+    function pick(shift: bool) {
+        root.select-row(root.row-index, root.row-data.id, shift, !shift);
+    }
+    // Only emitted under `view-context == "playlist-detail"`.
+    callback request-remove-from-playlist([int] /*track_ids*/);
+    // The id is the row's own album/artist/genre linkage, already non-zero — the menu hides the
+    // entry when the row carries none.
+    callback go-to-album(int /*album_id*/);
+    callback go-to-artist(int /*artist_id*/);
+    callback go-to-genre(int /*genre_id*/);
+    // Bumped by anything that should make the host's filter input give up the keyboard: row
+    // clicks, checkbox clicks, right-click. Slint doesn't blur a TextInput on an outside click, so
+    // the host watches this counter and clears focus itself.
+    callback request-blur-search();
+    // Fires on pointer-up only when a drag really started (4 px threshold) and the slot would move
+    // this row. `DraggableTrackList` routes it to `reorder_playlist`.
+    callback drag-reorder(int /*from*/, int /*to*/);
+    // Requested viewport delta while dragging near a list edge, negative being up; the host
+    // re-clamps and applies it.
+    callback request-scroll-by(length /*delta-y*/);
+
+    // No width of its own: the list sets every row to its own width, which is the width `layout`
+    // was resolved for.
+    //
+    // Pinning min- and max-height equal is what lets the virtualizer measure rows, and
+    // `vertical-stretch: 0` stops them sharing leftover space. The pitch collapses the row to
+    // `row-h-compact` when the 36 px tile unmounts, thumbnail-less rows otherwise keeping
+    // full-height chrome and reading as low-density.
+    min-height: root.pitch;
+    max-height: root.pitch;
+    vertical-stretch: 0;
+    // Owns the cross-axis sizing of `chrome`, with `padding-bottom` carving off the inter-row gap.
+    // Without the layout, a free-positioned `width: 100%` chrome under a free Rectangle forms the
+    // height-100%-vs-Npx cycle and the ListView hands every row ~0 height, stacking them at y=0.
+    VerticalLayout {
+        padding-bottom: Theme.row-gap;
+        chrome := Rectangle {
+            // Pinned so the pill always fills the slot. Left to size from its content, chrome grows
+            // on hover as the checkbox and fav button swap in, reading as a row expanding under the
+            // cursor.
+            min-height: Theme.track-row-h(root.columns.show_artwork);
+            max-height: Theme.track-row-h(root.columns.show_artwork);
+        // A drag source fades so it reads as lifted out of position, for the length of the drag
+        // only. Inert without `enable-drag`, `drag-source` staying -1.
+        opacity: root.enable-drag && root.drag-source == root.row-index ? 0.4 : 1.0;
+        animate opacity { duration: Theme.dur-fast; easing: ease-in-out; }
+        // No radius here: a clip copies its element's radius, and a rounded one renders the whole
+        // row into a texture. Nothing reaches the corners, so a plain clip cuts the same overflow.
+        clip: true;
+        if root.selected || touch.has-hover: SelectionPill {
+            x: 0;
+            y: 0;
+            width: 100%;
+            height: 100%;
+            selected: root.selected;
+            hovered: touch.has-hover;
+            prev-selected: root.prev-selected;
+            next-selected: root.next-selected;
+        }
+
+        // `touch` **wraps** the cells so `cb-touch` and `fav-touch` are real descendants: Slint
+        // propagates `has-hover` to ancestors, not cousins, so with the cells outside `touch`
+        // moving onto `cb-touch` unmounted the checkbox mid-move and lost the click. The deepest
+        // TouchArea wins, and plain Rectangles pass clicks through.
+        touch := TouchArea {
+            // A disabled TouchArea processes nothing, so disk-only rows get no hover background,
+            // no checkbox swap-in and no double-click.
+            enabled: root.enabled;
+            // Grabbing only once a real drag is in flight; hover and idle press stay
+            // `default` so inner cell cursors aren't overridden when drag is off.
+            mouse-cursor:
+                root.enable-drag && self.pressed && root.drag-started
+                    ? grabbing
+                    : (root.artist-link-hovered || root.album-link-hovered ? pointer : default);
+            // A row-body click picks only once the view holds a selection, so the first pick is
+            // the box's and an idle list can't select by accident. **On `clicked`** rather than
+            // the release: this row's favourite toggle and star strip are the worked example in
+            // `slint-pitfalls.md`'s grab-invalidation entry. It runs before `pointer-event`, so
+            // `drag-started` still holds the value the block below is about to reset.
+            clicked => {
+                if (root.enabled && !root.drag-started && root.artist-link-pressed) {
+                    if (root.cloud-row) {
+                        CloudTrackActions.open-artist(root.row-data.artist_remote_id);
+                    } else {
+                        root.go-to-artist(root.row-data.artist_id);
+                    }
+                } else if (root.enabled && !root.drag-started && root.album-link-pressed) {
+                    if (root.cloud-row) {
+                        CloudTrackActions.open-album(root.row-data.album_remote_id);
+                    } else {
+                        root.go-to-album(root.row-data.album_id);
+                    }
+                } else if (root.enabled && root.cloud-row && root.single-click-play) {
+                    root.clicked-row();
+                } else if (!root.cloud-row && root.enabled && !root.drag-started) {
+                    if (root.selecting) {
+                        root.pick(root.press-shift);
+                    }
+                }
+            }
+            // Still plays while a selection is live: the two clicks pick and unpick, so the set
+            // comes out where it started.
+            double-clicked => {
+                if (!root.cloud-row) { root.double-clicked-row(); }
+                else if (!root.single-click-play) { root.clicked-row(); }
+            }
+            // The blur request is every left release, so clicking anywhere on a row drops filter
+            // focus. Drag press/up tracking shares this handler, `touch` being where Slint
+            // delivers them.
+            pointer-event(ev) => {
+                // `clicked` carries no modifiers, so the shift a range-pick needs is taken off
+                // the press that armed it.
+                if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                    root.press-shift = ev.modifiers.shift;
+                    root.press-link-x = self.mouse-x;
+                }
+                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                    root.request-blur-search();
+                }
+                if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.right && root.enabled) {
+                    if (root.cloud-row) { cloud-menu.show(); }
+                    else { ctx-menu.show(); }
+                    root.request-blur-search();
+                }
+                // Drag-reorder tracking — opt-in via `enable-drag`.
+                if (root.enable-drag) {
+                    if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                        root.drag-press-abs-y = self.absolute-position.y + self.pressed-y;
+                        root.drag-started = false;
+                        root.drop-slot = -1;
+                    }
+                    if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                        // Slot → `to` index; removing the source shifts higher indices down by
+                        // one. `drag-source == row-index` ties the commit to state nobody reset
+                        // behind our back — that pair lives on a global outliving this view, where
+                        // `drag-started` is per-row. `queue-row-item.slint` carries the same guard.
+                        if (root.drag-started
+                            && root.drag-source == root.row-index
+                            && root.drop-slot >= 0
+                            && root.drop-slot != root.row-index
+                            && root.drop-slot != root.row-index + 1) {
+                            root.drag-reorder(
+                                root.row-index,
+                                root.drop-slot <= root.row-index
+                                    ? root.drop-slot
+                                    : root.drop-slot - 1,
+                            );
+                        }
+                        root.drag-source = -1;
+                        root.drop-slot = -1;
+                        root.drag-started = false;
+                    }
+                    if (ev.kind == PointerEventKind.cancel) {
+                        root.drag-source = -1;
+                        root.drop-slot = -1;
+                        root.drag-started = false;
+                    }
+                }
+            }
+            moved => {
+                if (!root.enable-drag) {
+                    return;
+                }
+                if (self.pressed) {
+                    if (!root.drag-started
+                        && Math.abs((self.absolute-position.y + self.mouse-y) - root.drag-press-abs-y) > 4px) {
+                        root.drag-started = true;
+                        root.drag-source = root.row-index;
+                    }
+                    // Only the row holding `drag-source` drives `drop-slot` — the
+                    // `queue-row-item.slint` ownership rule.
+                    if (root.drag-started && root.drag-source == root.row-index) {
+                        root.drag-cur-abs-y = self.absolute-position.y + self.mouse-y;
+                        root.drop-slot = root.drag-computed-slot;
+                        // Edge auto-scroll — the band and nudge `queue-row-item.slint` uses.
+                        if (root.list-height > 0px) {
+                            if ((self.absolute-position.y + self.mouse-y) - root.list-y0 < 40px) {
+                                root.request-scroll-by(-6px);
+                            } else if (((root.list-y0 + root.list-height)
+                                        - (self.absolute-position.y + self.mouse-y)) < 40px) {
+                                root.request-scroll-by(6px);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // A playing row flips every cell to accent and keeps the weight. Every cell is placed
+            // where `layout` says, never laid out, for the header's reason; the number swaps to a
+            // checkbox on hover or selection.
+            if root.columns.show_number: Rectangle {
+                x: root.layout.number_x;
+                y: 0;
+                width: root.layout.number_w;
+                height: parent.height;
+                clip: true;
+                VerticalLayout {
+                    alignment: center;
+                    if root.cloud-row || (!touch.has-hover && !root.selected): Text {
+                        // `track_number` falls back to the row position when the tag
+                        // is missing; `index` counts down N..1 under a descending
+                        // sort so the column itself reads as sorted.
+                        text: root.number-mode == "track_number"
+                            ? (root.row-data.track_number > 0
+                                ? root.row-data.track_number
+                                : root.row-index + 1)
+                            : ((root.sort-field == "track_number" && root.sort-dir == "desc")
+                                ? root.row-count - root.row-index
+                                : root.row-index + 1);
+                        color: root.ink;
+                        font-size: Theme.font-size-row;
+                        horizontal-alignment: left;
+                    }
+                    // Hollow on hover, filled accent when selected. Owns its own
+                    // TouchArea so the box drives selection independently of the row.
+                    if !root.cloud-row && (touch.has-hover || root.selected): Checkbox {
+                        checked: root.selected;
+                        // The rim stands in for the number it replaced, so it takes
+                        // that cell's ink rather than the quieter default.
+                        unchecked-border: root.ink;
+
+                        cb-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            // Plain click toggles this row in or out; shift
+                            // range-selects against the anchor.
+                            pointer-event(ev) => {
+                                if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left && root.enabled) {
+                                    root.pick(ev.modifiers.shift);
+                                    root.request-blur-search();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Title cell: artwork, the title with its music video, and the favourite. The title
+            // row takes the cell's slack so the favourite stays pinned right, and the title elides
+            // against what the artwork and the badge leave it; the cell's `clip` guards whatever
+            // still escapes.
+            Rectangle {
+                x: root.layout.title_x;
+                y: 0;
+                width: root.layout.title_w;
+                height: parent.height;
+                clip: true;
+                // The favourite is pinned to the cell's **own right edge**, not packed after the
+                // title: with a stretchy middle row its position followed the title's length and
+                // the MV badge, so hearts sat at a different x on every row. The row of cells is
+                // sized to leave its slot, and the mark is placed absolutely at the edge.
+                HorizontalLayout {
+                    x: 0;
+                    y: 0;
+                    width: parent.width - (root.row-data.is_favorite ? 28px : 0px);
+                    height: parent.height;
+                    spacing: Theme.pad-sm;
+                    alignment: start;
+                    if root.columns.show_artwork: VerticalLayout {
+                        alignment: center;
+                        ArtworkImage {
+                            artwork-path: root.row-data.artwork_path;
+                            // Lazy per-instantiated-row lookup, so only the visible rows of a
+                            // virtualized list reach the shared row-tier LRU. A miss paints the
+                            // placeholder and schedules; `generation` is what repaints it.
+                            cover: RowCovers.request(root.row-data.artwork_path,
+                                root.row-data.artist, root.row-data.album, RowCovers.generation);
+                            tile-size: 36px;
+                            tile-radius: Theme.radius-sm;
+                            fade: root.fade;
+                        }
+                    }
+                    // The title and its music video pack left together; the cell's slack
+                    // falls after them, which keeps the favourite pinned at its right edge.
+                    HorizontalLayout {
+                        horizontal-stretch: 1;
+                        alignment: start;
+                        // Collapses with the badges, so a row without one pays no gap.
+                        spacing: (root.row-data.mv_remote_id != "" || root.row-data.local_match != "")
+                            ? Theme.pad-xs : 0px;
+                        Text {
+                            // The leading U+200E forces the string's BiDi base
+                            // direction to LTR. Without it a title starting in Arabic
+                            // or Hebrew takes an RTL base and Slint's elide drops the
+                            // `…` entirely, leaving a gap at the cell's left edge with
+                            // no truncation marker. Arabic substrings still render RTL
+                            // inline — only the base direction moves, so the indicator
+                            // anchors right for every row whatever the script.
+                            text: "‎" + root.row-data.title;
+                            color: root.ink;
+                            font-size: Theme.font-size-row;
+                            overflow: elide;
+                            // `alignment` on a `HorizontalLayout` is the main (horizontal) axis,
+                            // so it can't centre a label vertically; the `Text` does that here.
+                            vertical-alignment: center;
+                        }
+                        // The row's own music video, between the title and the favourite mark.
+                        // **Collapsed rather than an `if`**, so the tooltip mounted at the row
+                        // root can still read its rect and hover; an id inside an `if` is
+                        // unreadable from outside it. The width keeps it out of the layout when
+                        // the row has no MV, and the spacing above collapses with it.
+                        VerticalLayout {
+                            alignment: center;
+                            mv-badge := Rectangle {
+                                width: root.row-data.mv_remote_id != "" ? 22px : 0px;
+                                height: 22px;
+                                visible: root.row-data.mv_remote_id != "";
+                                MaterialIcon {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    name: "play_circle";
+                                    icon-size: 18px;
+                                    icon-color: mv-touch.has-hover ? Theme.accent : root.ink;
+                                    fade: root.fade;
+                                }
+                                // `clicked`, not a pointer release: this area sits over the row
+                                // body's own `TouchArea`, and `clicked` is gated on the press this
+                                // one took, so opening the video can't also play the row.
+                                mv-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    enabled: root.enabled;
+                                    clicked => {
+                                        if (root.enabled) {
+                                            CloudTrackActions.open-mv(root.row-data.mv_remote_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // **The cloud-disk mapping's mark.** Collapsed rather than an `if` for
+                        // the MV badge's reason: the tooltip at the row root reads its rect. The
+                        // label is translated, so the chip sizes off the text rather than a
+                        // constant that fits English alone.
+                        VerticalLayout {
+                            alignment: center;
+                            local-slot := Rectangle {
+                                width: root.row-data.local_match != ""
+                                    ? local-label.preferred-width + 2 * Theme.pad-sm
+                                    : 0px;
+                                height: 20px;
+                                visible: root.row-data.local_match != "";
+                                border-radius: 10px;
+                                background: Theme.accent.with-alpha(0.16);
+                                local-label := Text {
+                                    text: @tr("Local");
+                                    color: Theme.accent;
+                                    font-size: Theme.font-size-sm;
+                                    font-weight: 600;
+                                }
+                                local-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    enabled: root.enabled;
+                                    clicked => { if (root.enabled) { root.clicked-row(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.row-data.is_favorite: VerticalLayout {
+                    x: parent.width - 28px;
+                    y: 0;
+                    width: 28px;
+                    height: parent.height;
+                    alignment: center;
+                    MaterialIcon {
+                        name: "favorite";
+                        icon-size: 18px;
+                        icon-color: Theme.red;
+                        filled: true;
+                        fade: root.fade;
+                    }
+                }
+            }
+
+            // Uniform elide-with-LRM cells; year and length are structurally different and stay
+            // inline below.
+            if root.columns.show_artist: DataCell {
+                x: root.layout.artist_x;
+                y: 0;
+                width: root.layout.artist_w;
+                height: parent.height;
+                // Sentence case rather than title, to share `Unknown artist`'s msgid with the
+                // grid card and the now-playing line — a second casing is a second catalogue
+                // entry saying the same thing.
+                text-content: root.row-data.artist != ""
+                    ? root.row-data.artist
+                    : @tr("Unknown artist");
+                ink: root.artist-link-hovered ? Theme.accent : root.ink;
+            }
+            if root.columns.show_album: DataCell {
+                x: root.layout.album_x;
+                y: 0;
+                width: root.layout.album_w;
+                height: parent.height;
+                text-content: root.row-data.album != ""
+                    ? root.row-data.album
+                    : @tr("Unknown album");
+                ink: root.album-link-hovered ? Theme.accent : root.ink;
+            }
+            if root.columns.show_genre: DataCell {
+                x: root.layout.genre_x;
+                y: 0;
+                width: root.layout.genre_w;
+                height: parent.height;
+                text-content: root.row-data.genre;
+                ink: root.ink;
+            }
+
+            // Year — no LRM, no elide (4-digit value always fits).
+            if root.columns.show_year: Rectangle {
+                x: root.layout.year_x;
+                y: 0;
+                width: root.layout.year_w;
+                height: parent.height;
+                clip: true;
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.row-data.year > 0 ? root.row-data.year : "";
+                        color: root.ink;
+                        font-size: Theme.font-size-row;
+                    }
+                }
+            }
+
+            // The duration is fully replaced by the favourite toggle on hover. The
+            // persistent "this is a favorite" indicator lives beside the title; this
+            // swap is only the action button.
+            Rectangle {
+                x: root.layout.length_x;
+                y: 0;
+                width: root.layout.length_w;
+                height: parent.height;
+                clip: true;
+                HorizontalLayout {
+                    spacing: Theme.pad-xs;
+                    alignment: start;
+                    if !touch.has-hover || !root.favorite-clickable: VerticalLayout {
+                        alignment: center;
+                        Text {
+                            // Precomputed in Rust at row build, so this binding doesn't
+                            // re-run a Slint pure function on every invalidation.
+                            text: root.row-data.display_duration;
+                            color: root.ink;
+                            font-size: Theme.font-size-row;
+                            horizontal-alignment: left;
+                        }
+                    }
+                    if touch.has-hover && root.favorite-clickable: Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: self.height / 2;
+                        background: fav-touch.has-hover ? Theme.surface1 : transparent;
+                        MaterialIcon {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            name: root.row-data.is_favorite ? "favorite" : "favorite_border";
+                            icon-size: 18px;
+                            icon-color: root.row-data.is_favorite ? Theme.red : Theme.subtext0;
+                            filled: root.row-data.is_favorite;
+                        }
+                        fav-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { if (root.enabled) { root.toggle-favorite(); } }
+                        }
+                    }
+                }
+            }
+        }
+
+        // **At the row root, not in the title cell**: that cell and `chrome` both clip, so a pill
+        // anchored on the badge would be cut off above the row. The two deltas place it over the
+        // badge in this row's own frame.
+        Tooltip {
+            x: mv-badge.absolute-position.x - root.absolute-position.x;
+            y: mv-badge.absolute-position.y - root.absolute-position.y;
+            text: @tr("Music video");
+            hovered: mv-touch.has-hover;
+            host-width: mv-badge.width;
+            host-height: mv-badge.height;
+        }
+
+        // The same root-level mount for the same reason, and it is what names the local copy —
+        // the chip itself is one word wide.
+        Tooltip {
+            x: local-slot.absolute-position.x - root.absolute-position.x;
+            y: local-slot.absolute-position.y - root.absolute-position.y;
+            text: @tr("Local copy: {}", root.row-data.local_match);
+            hovered: local-touch.has-hover;
+            host-width: local-slot.width;
+            host-height: local-slot.height;
+        }
+
+        // The menu itself is `TrackContextMenu`, shared with the queue sheet's row. What stays
+        // here is the pointer position, the one thing it deliberately doesn't own.
+        cloud-menu := CloudTrackContextMenu {
+            row-data: root.row-data;
+            at-x: touch.mouse-x;
+            at-y: touch.mouse-y;
+            play => { root.clicked-row(); }
+            toggle-favorite => { root.toggle-favorite(); }
+            show-playlist-remove: root.cloud-playlist-editable;
+            remove-from-playlist => { root.remove-cloud-row(root.row-data.remote_id); }
+            show-playlist-reorder: root.cloud-playlist-reorderable;
+            move-up => { root.move-cloud-row(root.row-data.remote_id, -1); }
+            move-down => { root.move-cloud-row(root.row-data.remote_id, 1); }
+        }
+        ctx-menu := TrackContextMenu {
+            row-id: root.row-data.id;
+            row-is-favorite: root.row-data.is_favorite;
+            row-selected: root.row-data.selected;
+            album-id: root.row-data.album_id;
+            artist-id: root.row-data.artist_id;
+            genre-id: root.row-data.genre_id;
+            view-context: root.view-context;
+            current-playlist-id: root.current-playlist-id;
+            effective-selection: root.view-selected-ids;
+            selection-count: root.view-selected-ids.length;
+            at-x: touch.mouse-x;
+            at-y: touch.mouse-y;
+            play-single => { root.play-row(root.row-data.id, root.row-index); }
+            play-next(ids) => { root.play-next(ids); }
+            add-to-queue(ids) => { root.add-to-queue(ids); }
+            toggle-favorite(ids, on) => { root.toggle-row-favorite(ids, on); }
+            request-remove(ids) => { root.request-remove-from-playlist(ids); }
+            select-all => { root.select-all(); }
+            clear-selection => { root.clear-selection(); }
+            go-to-album(aid) => { root.go-to-album(aid); }
+            go-to-artist(aid) => { root.go-to-artist(aid); }
+            go-to-genre(gid) => { root.go-to-genre(gid); }
+        }
+    }
+    }
+}

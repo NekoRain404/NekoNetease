@@ -1,0 +1,43 @@
+import { Theme } from "../../theme.slint";
+import { OnboardingPanelHeader } from "onboarding-panel-header.slint";
+import { Settings } from "../../settings.slint";
+import { NekoNeteaseUpdater } from "../../globals/updater.slint";
+import { SectionDivider } from "../settings/section-divider.slint";
+import { ToggleSwitch } from "../settings/toggle-switch.slint";
+import { OnboardingFeatureRow } from "onboarding-feature-row.slint";
+
+// Step 3. Each row carries its live state and uses the same Settings callback as the main Settings
+// view, so nothing here needs a restart.
+export component OnboardingFeaturesPanel inherits VerticalLayout {
+    min-width: 0px;
+    spacing: Theme.pad-sm;
+
+    OnboardingPanelHeader {
+        title: @tr("What NekoNetease can reach");
+        summary: @tr("NekoNetease works offline. These are the parts that reach out.");
+    }
+
+    OnboardingFeatureRow {
+        icon: "travel_explore";
+        label: @tr("Look up lyrics online");
+        description: @tr("When a track carries no words of its own, ask lrclib.net for them");
+        ToggleSwitch {
+            checked <=> Settings.lyrics-online-enabled;
+            toggled(v) => { Settings.lyrics-online-enabled-changed(v); }
+        }
+    }
+    SectionDivider {}
+
+    // The one row here that ships *on*, which is the whole reason it earns a place: nothing else
+    // announces the daily check. Hidden where the package manager already suppresses the task.
+    if NekoNeteaseUpdater.updates-supported && !NekoNeteaseUpdater.system-managed: SectionDivider {}
+    if NekoNeteaseUpdater.updates-supported && !NekoNeteaseUpdater.system-managed: OnboardingFeatureRow {
+        icon: "update";
+        label: @tr("Check for updates automatically");
+        description: @tr("Once a day, NekoNetease asks GitHub whether a newer version is out.");
+        ToggleSwitch {
+            checked <=> NekoNeteaseUpdater.auto-check-enabled;
+            toggled(v) => { NekoNeteaseUpdater.auto-check-changed(v); }
+        }
+    }
+}

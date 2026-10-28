@@ -1,0 +1,35 @@
+import { Settings } from "../../settings.slint";
+import { SettingsPage } from "../../globals/settings-page.slint";
+import { SectionCard } from "../../components/settings/section-card.slint";
+import { SettingRow } from "../../components/settings/setting-row.slint";
+import { Dropdown } from "../../components/settings/dropdown.slint";
+
+export component UiScaleSection inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    in property <string> tab-name;
+    property <string> card-title: @tr("UI Scale");
+    property <string> scale-label: @tr("Text and interface size");
+    property <string> scale-desc: @tr("Scale fonts and controls together. Applies immediately, in addition to system display scaling.");
+    out property <bool> has-matches: SettingsPage.row-visible(root.tab-name,
+        root.card-title, root.scale-label + " " + root.scale-desc, SettingsPage.search-query);
+
+    VerticalLayout {
+        if has-matches: SectionCard {
+            title: root.card-title;
+            SettingRow {
+                icon: "tune";
+                label: root.scale-label;
+                description: root.scale-desc;
+                Dropdown {
+                    options: Settings.ui-scale-options;
+                    selected-index <=> Settings.ui-scale-index;
+                    trigger-width: 100px;
+                    selected(i) => { Settings.ui-scale-changed(i); }
+                }
+            }
+        }
+    }
+}

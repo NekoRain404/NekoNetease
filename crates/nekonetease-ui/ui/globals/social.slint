@@ -1,0 +1,136 @@
+// The social surface: a user's profile and dynamics, and the signed-in account's own messages and
+// notifications.
+//
+// Every id is a string because `NetEase` user and message ids pass Slint's 32-bit `int`, and a
+// clamped id addresses the wrong row. Message and notice text lives only in these properties; Rust
+// keeps no database copy and logs none of it.
+
+export struct SocialPlaylistRow {
+    id: string,
+    title: string,
+    subtitle: string,
+    artwork-path: string,
+}
+
+export struct SocialEventRow {
+    id: string,
+    // "track", "playlist", "text" or "unknown"; the view picks the glyph from it.
+    kind: string,
+    title: string,
+    text: string,
+    subtitle: string,
+    display-time: string,
+    artwork-path: string,
+}
+
+export struct SocialConversationRow {
+    peer-id: string,
+    nickname: string,
+    last-message: string,
+    display-time: string,
+    avatar-path: string,
+    unread: int,
+    from-me: bool,
+}
+
+export struct SocialMessageRow {
+    id: string,
+    author: string,
+    content: string,
+    display-time: string,
+    avatar-path: string,
+    from-me: bool,
+}
+
+export struct SocialNoticeRow {
+    id: string,
+    // "comment" or "notice".
+    kind: string,
+    title: string,
+    content: string,
+    nickname: string,
+    user-id: string,
+    display-time: string,
+    avatar-path: string,
+}
+
+export global Social {
+    in-out property <bool> open: false;
+    // "profile", "messages" or "notifications".
+    in-out property <string> page;
+
+    // The `Albums.request-cover` contract: cache-only, a miss schedules the fetch and a later
+    // generation bump repaints the mount.
+    in-out property <int> remote-covers-generation: 0;
+    pure callback request-cover(string /*artwork_path*/, int /*generation*/) -> image;
+
+    in-out property <string> profile-user-id;
+    in-out property <string> profile-name;
+    in-out property <string> profile-signature;
+    in-out property <string> profile-avatar-path;
+    in-out property <string> profile-followers;
+    in-out property <string> profile-following;
+    in-out property <string> profile-playlists;
+    in-out property <string> profile-events;
+    in-out property <bool> profile-followed: false;
+    in-out property <bool> profile-self: false;
+    in-out property <bool> profile-loading: false;
+    in-out property <bool> profile-busy: false;
+    in-out property <string> profile-error;
+
+    in-out property <[SocialPlaylistRow]> playlists;
+    in-out property <bool> playlists-has-more: false;
+    in-out property <bool> playlists-loading: false;
+    in-out property <string> playlists-error;
+
+    in-out property <[SocialEventRow]> events;
+    in-out property <bool> events-has-more: false;
+    in-out property <bool> events-loading: false;
+    in-out property <bool> events-loading-more: false;
+    in-out property <string> events-error;
+    // A page that failed is not a surface that failed: the rows already loaded stay, so the
+    // notice belongs at the footer where the More pill was rather than in `events-error`, which
+    // the empty-state block paints over the list.
+    in-out property <string> events-more-error;
+
+    in-out property <[SocialConversationRow]> conversations;
+    in-out property <bool> conversations-has-more: false;
+    in-out property <bool> conversations-loading: false;
+    in-out property <bool> conversations-loading-more: false;
+    in-out property <string> conversations-error;
+
+    in-out property <string> peer-user-id;
+    in-out property <string> peer-name;
+    in-out property <string> peer-avatar-path;
+    in-out property <[SocialMessageRow]> messages;
+    in-out property <bool> messages-has-more: false;
+    in-out property <bool> messages-loading: false;
+    in-out property <bool> messages-loading-more: false;
+    in-out property <string> messages-error;
+
+    // 0 is the comment replies tab, 1 the system notices tab.
+    in-out property <int> notice-tab: 0;
+    in-out property <[SocialNoticeRow]> notices;
+    in-out property <bool> notices-has-more: false;
+    in-out property <bool> notices-loading: false;
+    in-out property <bool> notices-loading-more: false;
+    in-out property <string> notices-error;
+    // The sibling of `events-more-error`, for the notifications footer.
+    in-out property <string> notices-more-error;
+
+    callback close();
+    callback retry();
+    callback toggle-follow();
+    callback load-more-playlists();
+    callback load-more-events();
+    callback open-conversation(string /*peer_id*/);
+    callback load-more-conversations();
+    callback load-more-messages();
+    // The messages card's one-pane facing rule. The breakpoint is the view's own
+    // `two-pane-min-width`; this answers which pane faces below it, and lives in Rust
+    // (`ui::social::pane`) so both directions of a flip are testable without a window.
+    pure callback messages-thread-front(bool /*peer picked*/, bool /*list front*/) -> bool;
+    callback select-notice-tab(int /*tab*/);
+    callback load-more-notices();
+    callback open-user(string /*user_id*/);
+}

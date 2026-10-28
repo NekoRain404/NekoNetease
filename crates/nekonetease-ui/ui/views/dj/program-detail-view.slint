@@ -1,0 +1,161 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Dj } from "../../globals/dj.slint";
+import { RowCovers } from "../../globals/tracks.slint";
+import { ArtworkImage } from "../../components/artwork-image.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+
+// One podcast episode opened over its station's programme list. Play hands the episode's
+// `mainSong` id to the existing cloud playback path, so this view never resolves a stream.
+export component ProgramDetailView inherits Rectangle {
+    background: Theme.base;
+
+    VerticalLayout {
+        padding-left: Theme.pad-lg;
+        padding-right: Theme.pad-lg;
+        padding-top: Theme.pad-lg;
+        spacing: Theme.pad-md;
+
+        HorizontalLayout {
+            height: 40px;
+            spacing: Theme.pad-md;
+
+            Text {
+                text: @tr("Podcast programme");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                font-weight: 600;
+                letter-spacing: 0.4px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "arrow_back";
+                    text: @tr("Back");
+                    clicked => { Dj.close-detail(); }
+                }
+            }
+        }
+
+        body-sv := ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            vertical-scrollbar-policy: always-off;
+            viewport-width: self.width;
+
+            VerticalLayout {
+                padding-bottom: Theme.pad-lg;
+                spacing: Theme.pad-md;
+
+                if Dj.detail-loading: Text {
+                    text: @tr("Loading…");
+                    color: Theme.subtext0;
+                }
+
+                if !Dj.detail-loading && Dj.detail-error != "": VerticalLayout {
+                    spacing: Theme.pad-md;
+                    Text {
+                        text: Dj.detail-error;
+                        color: Theme.subtext0;
+                        wrap: word-wrap;
+                    }
+                    ActionPill {
+                        PillButton {
+                            icon: "refresh";
+                            text: @tr("Retry");
+                            clicked => { Dj.retry-program(); }
+                        }
+                    }
+                }
+
+                if !Dj.detail-loading && Dj.detail-error == "": VerticalLayout {
+                    spacing: Theme.pad-md;
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-lg;
+                        alignment: start;
+
+                        ArtworkImage {
+                            tile-size: 200px;
+                            fallback-icon: "playlist";
+                            artwork-path: Dj.detail-artwork-path;
+                            cover: RowCovers.request(
+                                Dj.detail-artwork-path, "", "", RowCovers.generation,
+                            );
+                        }
+
+                        VerticalLayout {
+                            spacing: Theme.pad-sm;
+                            alignment: start;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: Dj.detail-title;
+                                color: Theme.text;
+                                font-size: 24px;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+                            if Dj.detail-host != "": Text {
+                                text: Dj.detail-host;
+                                color: Theme.subtext0;
+                                font-size: Theme.font-size-md;
+                                overflow: elide;
+                            }
+                            if Dj.detail-publish-date != "": Text {
+                                text: Dj.detail-publish-date;
+                                color: Theme.subtext0;
+                                font-size: Theme.font-size-sm;
+                            }
+                            if Dj.detail-duration != "": Text {
+                                text: Dj.detail-duration;
+                                color: Theme.subtext0;
+                                font-size: Theme.font-size-sm;
+                            }
+                            if Dj.detail-listeners != "": Text {
+                                text: @tr("Plays: {}", Dj.detail-listeners);
+                                color: Theme.subtext0;
+                                font-size: Theme.font-size-sm;
+                            }
+
+                            ActionPill {
+                                PillButton {
+                                    icon: "play_arrow";
+                                    text: @tr("Play");
+                                    enabled: Dj.detail-song-id != "";
+                                    clicked => { Dj.play-program(); }
+                                }
+                            }
+                        }
+                    }
+
+                    if Dj.detail-description != "": Text {
+                        text: Dj.detail-description;
+                        color: Theme.text;
+                        font-size: Theme.font-size-row;
+                        wrap: word-wrap;
+                    }
+
+                    if Dj.detail-song-id == "": Text {
+                        text: @tr("This programme has no audio.");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+            }
+        }
+    }
+
+    OverlayScrollbar {
+        x: parent.width - self.width;
+        y: body-sv.absolute-position.y - root.absolute-position.y;
+        width: Theme.scrollbar-slot;
+        height: body-sv.height;
+        visible-size: body-sv.visible-height;
+        content-size: body-sv.viewport-height;
+        offset: -body-sv.viewport-y;
+        scroll-to(o) => { body-sv.viewport-y = -o; }
+    }
+}

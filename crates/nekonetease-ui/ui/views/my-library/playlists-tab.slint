@@ -1,0 +1,95 @@
+import { Theme } from "../../theme.slint";
+import { Playlists } from "../../globals/playlists.slint";
+import { Dialog } from "../../globals/dialog.slint";
+import { PlaylistGrid } from "../../components/grid/playlist-grid.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { RoamingTab } from "roaming-tab.slint";
+
+// The grid paints the signed-in account's NetEase playlists. Which rows may be edited is the
+// account's ownership question, answered at the `editable` binding below.
+export component MyLibraryPlaylistsTab inherits Rectangle {
+    in property <length> card-w;
+    in property <length> card-h;
+    in property <length> row-h;
+    in property <length> gap;
+
+    if Playlists.category == 2: RoamingTab { width: 100%; height: 100%; }
+
+    grid := PlaylistGrid {
+        y: Theme.pad-md;
+        width: 100%;
+        height: parent.height - Theme.pad-md;
+        visible: Playlists.category != 2;
+        rows: Playlists.grid-rows;
+        card-width: root.card-w;
+        card-height: root.card-h;
+        row-height: root.row-h;
+        gap: root.gap;
+        // The page renders one category at a time, so the category is the whole ownership
+        // answer and no per-row flag is needed: Created (1) is the account's own; Collected (0)
+        // and Roaming (2) are not.
+        editable: Playlists.category == 1;
+        scroll-offset <=> Playlists.scroll-offset;
+        open-playlist(id) => { Playlists.open-playlist(id); }
+        delete-playlist(id) => { Dialog.open-delete-playlist(id); }
+        edit-playlist-artwork(_) => { }
+        rename-playlist(id) => {
+            Dialog.open-rename-playlist(id, Playlists.row-name(id), Playlists.row-description(id));
+        }
+        delete-playlists(ids) => { Dialog.open-delete-playlists(ids); }
+        edit-playlist-rules(_) => { }
+        covers-generation: Playlists.covers-generation;
+        request-cover(p, g) => { Playlists.request-cover(p, g) }
+    }
+
+    if Playlists.cloud-loading && Playlists.category != 2: Text {
+        x: Theme.pad-lg;
+        y: Theme.pad-md;
+        text: @tr("Loading…");
+        color: Theme.subtext0;
+    }
+
+    if Playlists.cloud-error != "" && Playlists.category != 2: VerticalLayout {
+        x: Theme.pad-lg;
+        y: Theme.pad-md;
+        width: parent.width - 2 * Theme.pad-lg;
+        spacing: Theme.pad-md;
+        Text {
+            text: Playlists.cloud-error;
+            color: Theme.subtext0;
+            wrap: word-wrap;
+        }
+        ActionPill {
+            PillButton {
+                icon: "refresh";
+                text: @tr("Retry");
+                clicked => {
+                    if (Playlists.retry-special >= 0) { Playlists.open-special(Playlists.retry-special); }
+                    else { Playlists.retry-cloud(); }
+                }
+            }
+        }
+    }
+
+    if !Playlists.cloud-loading && Playlists.cloud-error == ""
+        && Playlists.total-count == 0 && Playlists.category != 2: GridEmptyState {
+        icon: "queue_music";
+        title: Playlists.category == 0 ? @tr("No collected playlists yet") : @tr("No playlists yet");
+        body: Playlists.category == 0 ? @tr("Playlists you collect on NetEase will appear here.") : "";
+    }
+
+    OverlayScrollbar {
+        horizontal: false;
+        x: parent.width - self.width;
+        y: Theme.pad-md;
+        width: Theme.scrollbar-slot;
+        height: parent.height - Theme.pad-md;
+        visible: Playlists.category != 2;
+        visible-size: grid.v-visible-height;
+        content-size: grid.v-viewport-height;
+        offset: grid.v-offset;
+        scroll-to(o) => { grid.set-v-offset(o); }
+    }
+}

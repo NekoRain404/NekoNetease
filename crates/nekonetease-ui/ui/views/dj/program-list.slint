@@ -1,0 +1,46 @@
+import { TrackListRow, TrackColumns } from "../../models.slint";
+import { Theme } from "../../theme.slint";
+import { Player } from "../../globals/player.slint";
+import { TrackList } from "../../components/track-list/track-list.slint";
+import { TrackListScrollbars } from "../../components/track-list-scrollbars.slint";
+
+// One station's programme table. The root exists so the scrollbar's `list-y` stays in this
+// component's coordinates; mounting it at the page root would have to read an id inside an `if`.
+export component DjProgramList inherits Rectangle {
+    in property <[TrackListRow]> rows;
+    in-out property <TrackColumns> columns;
+
+    callback open-program(int /*programme row index*/);
+
+    clip: true;
+
+    tl := TrackList {
+        width: 100%;
+        height: 100%;
+        rows: root.rows;
+        columns <=> root.columns;
+        number-mode: "track_number";
+        sortable: false;
+        playing-track-id: Player.vm.track.id;
+        playing-remote-id: Player.vm.track.file_path == "" ? Player.vm.track.remote_id : "";
+        cloud-rows: true;
+        cloud-entity-links: false;
+        cloud-single-click: true;
+        cloud-favorite-clickable: false;
+        play-cloud-row(id, index) => { root.open-program(index); }
+    }
+
+    TrackListScrollbars {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        list-y: tl.absolute-position.y - root.absolute-position.y;
+        body-y: tl.body-y;
+        body-height: tl.body-height;
+        v-visible-height: tl.v-visible-height;
+        v-viewport-height: tl.v-viewport-height;
+        v-offset: tl.v-offset;
+        set-v-offset(o) => { tl.set-v-offset(o); }
+    }
+}

@@ -1,0 +1,181 @@
+import { TrackListRow, TrackColumns, EntityStripRow } from "../models.slint";
+
+// Search entities keep the remote identity as text. These results never enter the local library
+// projection, whose Slint `int` ids cannot represent all NetEase IDs.
+export struct SearchEntityRow {
+    remote_id: string,
+    title: string,
+    subtitle: string,
+    artwork_path: string,
+}
+
+// One virtualized grid row of discovery cards. Rust chunks `discovery-rows` / `chart-rows`
+// against the grid's `GridGeometry` answer, exactly as the charts page chunks its own catalogue.
+export struct SearchGridRow {
+    entities: [SearchEntityRow],
+}
+
+// The Search view: NetEase song results (compact until "Show all") and a recent-searches chip list
+// while the input is empty. **The compact row count is Rust's `COMPACT_TRACK_LIMIT`** — don't
+// restate it here, it has gone stale once already. Tab-leave keeps `query` and `recent-rows` so the
+// user can rerun a query by pressing Enter.
+export global Search {
+    // Each keystroke bumps `pending`; a Timer in the view fires `commit-search` once it diverges
+    // from `applied` — the throttle shape the other filters use.
+    in-out property <string> query;
+    // The query whose results are on screen. The suggestion popup only shows over an edit that has
+    // not committed yet, so a committed search never keeps rows over its own result.
+    in-out property <string> committed-query;
+    in-out property <int>    blur-search-tick: 0;
+    in-out property <int>    debounce-tick-pending: 0;
+    in-out property <int>    debounce-tick-applied: 0;
+    // The suggestion fetch's own keystroke counter, so it can't restart the commit debounce and a
+    // pick (which bumps only that debounce) can't ask for suggestions with no keystroke behind it.
+    in-out property <int>    suggest-tick-pending: 0;
+    in-out property <bool>   loading: false;
+    in-out property <string> search-kind: "songs"; // "songs" | "albums" | "artists" | "playlists"
+    in-out property <int>    page-index: 0;
+    in-out property <int>    results-total: 0;
+    in-out property <string> results-summary;
+    in-out property <bool>   has-previous-page: false;
+    in-out property <bool>   has-next-page: false;
+    in-out property <string> search-error;
+    in-out property <[SearchEntityRow]> entity-results;
+    in-out property <int> entity-covers-generation: 0;
+
+    // The *visible* slice: capped by default, the whole backend result once `show-all-tracks` is
+    // on — and that outer cap is `search_all`'s own `LIMIT`, which belongs there rather than in a
+    // third copy here. Rust keeps the full set cached, so the toggle swaps with no DB hit;
+    // `tracks-total` is the pre-truncate count for the button's copy.
+    in-out property <[TrackListRow]>   tracks;
+    in-out property <int>              tracks-total;
+    in-out property <bool>             show-all-tracks: false;
+    in-out property <[EntityStripRow]> album-rows;
+    in-out property <[EntityStripRow]> artist-rows;
+
+    // A discriminator plus scalars rather than a row struct, for two reasons: the badge text has
+    // to be localized inline here, a Rust-pushed string not reaching `@tr`, and baking a `kind`
+    // field into `EntityStripRow` would warp every other consumer. Empty means no Top Result.
+    in-out property <string> top-kind;            // "album" | "artist" | "genre" | ""
+    in-out property <int>    top-id;
+    in-out property <string> top-remote-id;
+    in-out property <string> top-title;
+    in-out property <string> top-subtitle;
+    in-out property <string> top-artwork-path;
+    // Read only for a genre card: a genre has no artwork, so its tile paints the same name-hashed
+    // gradient `GenreGrid` gives it. Two `color`s rather than a brush because Slint owns the
+    // `@linear-gradient`, as `GenreRow` does.
+    in-out property <color> top-tile-color-1;
+    in-out property <color> top-tile-color-2;
+
+    // Shown only on an empty query. A chip click fills the query and commits; its X removes
+    // optimistically and persists.
+    in-out property <[string]> recent-rows;
+
+    // The suggestion rows under the bar and the box text they answered. The second half is what
+    // hides them when a chip fills the box directly, since that path emits no query change.
+    in-out property <[string]> suggestions;
+    in-out property <string> suggestions-query;
+    // An answer on its way. The commit Timer waits while one is out or a popup is up, since the
+    // pause that would have committed the query is what is producing the rows.
+    in-out property <bool> suggestions-pending: false;
+
+    // The discovery half of the empty state, loaded once per section visit. The three feeds are
+    // requested together but fail independently, so each carries its own flag and its section
+    // paints a retry prompt rather than leaving the page blank.
+    in-out property <[string]> hot-searches;
+    in-out property <[SearchEntityRow]> discovery-rows;
+    in-out property <[SearchEntityRow]> chart-rows;
+    // The same feeds chunked into grid rows. The flat lists above stay the cache a resize
+    // re-chunks from and the mount condition each section gates on.
+    in-out property <[SearchGridRow]> discovery-grid-rows;
+    in-out property <[SearchGridRow]> chart-grid-rows;
+    // Each grid's column count, derived from the width it was handed and read back here when a
+    // fetch lands so the rows arrive already chunked.
+    in-out property <int> discovery-columns: 4;
+    in-out property <int> chart-columns: 4;
+    // One request covers all three, so the loading line is theirs together.
+    in-out property <bool> discovery-loading: false;
+    in-out property <bool> hot-searches-failed: false;
+    in-out property <bool> discovery-failed: false;
+    in-out property <bool> charts-failed: false;
+
+    // Its `TrackList`'s columns, under view id "search".
+    in-out property <TrackColumns> track-columns;
+
+    in-out property <string> sort-field: "rank"; // FTS5 rank order
+    in-out property <string> sort-dir: "asc";
+
+    in-out property <[int]> selected-ids;
+    in-out property <int>   selection-anchor: -1;
+
+    // Three tiers, one per surface; result rows go through `RowCovers`.
+    pure callback request-album-strip-cover(string)  -> image;
+    pure callback request-artist-strip-cover(string) -> image;
+    pure callback request-top-result-cover(string)   -> image;
+
+    callback query-changed(string);     // per keystroke; Rust mirrors and clears on empty
+    callback commit-search(string);     // the debounce Timer fires this
+    callback toggle-show-all-tracks();
+    callback search-kind-changed(string);
+    callback request-page(int /*direction: -1 or 1*/);
+    callback retry-search();
+    pure callback request-entity-cover(string /*artwork_path*/, int /*cover generation*/) -> image;
+
+    callback recent-pick(string);
+    callback recent-remove(string);
+    callback recent-clear();
+    // The recent-pick path, for a trending chip: fill the box and let the debounce commit it.
+    callback hot-search-pick(string);
+    // Re-asks for the three discovery feeds after a failure; a no-op while one is in flight.
+    callback retry-discovery();
+    // A grid's width packed a different column count; Rust re-chunks the cached flat rows rather
+    // than re-requesting the feed.
+    callback discovery-columns-changed(int /*columns*/);
+    callback chart-columns-changed(int /*columns*/);
+    // The suggestion throttle asks; a row pick fills the box and lets the debounce commit it. A
+    // click outside settles the exchange, which is what lets the deferred commit run.
+    callback request-suggestions(string);
+    callback suggestion-pick(string);
+    callback dismiss-suggestions();
+
+    // Each stamps `*Detail.origin-nav-index` **before** flipping `Nav.selected-index`, so the
+    // detail's back arrow returns here.
+    callback open-album(int /*album_id*/);
+    callback open-artist(int /*artist_id*/);
+    callback open-top-result();         // resolves top-kind / top-id
+    callback open-top-result-remote(string /*kind*/, string /*remote_id*/);
+
+    // A chart is a playlist, and Search owns no playlist surface: the row hands off to
+    // My Library's Playlists tab, where the shared detail mounts.
+    callback open-chart(string /*remote ID*/);
+
+    callback play-row(int /*track_id*/, int /*index*/);
+    callback play-cloud-row(string /*remote_id*/, int /*index*/);
+    callback toggle-cloud-favorite(string /*remote_id*/, bool /*new_state*/);
+    callback play-next([int] /*track_ids*/);
+    callback add-to-queue([int]);
+    callback toggle-row-favorite([int] /*track_ids*/, bool /*new*/);
+    callback select-row(int /*idx*/, int /*id*/, bool /*shift*/, bool /*ctrl*/);
+    callback select-all();
+    callback clear-selection();
+    callback request-sort(string /*field*/);
+    callback toggle-column(string /*column_id*/);
+    // The row's other two "Go to …" entries reuse `open-album` / `open-artist` above.
+    callback go-to-genre(int /*genre_id*/);
+
+    // Mirrored into `SearchUi.section_active`; drives the strip-cache release.
+    callback section-active-changed(bool);
+
+    // The Top Result subtitle, resolved per kind. Rust decides *which* line the card gets and calls
+    // the matching one from the UI thread — a string Rust formatted itself would render
+    // untranslated. Both reuse a msgid the detail headers carry, so no locale gains a string.
+    pure callback album-count-label(int /*count*/) -> string;
+    album-count-label(count) => {
+        return @tr("{n} album" | "{n} albums" % count);
+    }
+    pure callback track-count-label(int /*count*/) -> string;
+    track-count-label(count) => {
+        return @tr("{n} track" | "{n} tracks" % count);
+    }
+}

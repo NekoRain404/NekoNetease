@@ -1,0 +1,668 @@
+// The Settings page's reactive state. Rust populates the lists and indices at startup and on every
+// chip / dot click; the UI binds chip groups and colour-dot grids to them and forwards
+// `selected(int)` to the change callbacks. The page's own search filter and row-visibility rule
+// live on `SettingsPage`: values the user configures vs. how the page configuring them is navigated.
+
+export global Settings {
+    // Stable across runs — populated once at startup from `themes::registry()`.
+    in property <[string]> theme-names;
+    in-out property <int> theme-idx;
+
+    // The chips themselves are inline `@tr` literals in `appearance-section.slint`, so
+    // bundled translations re-render them on a locale switch; Rust drives only the
+    // index. Same for `color-style-idx` below.
+    in-out property <int> variant-idx;
+
+    // Re-populated on every theme *or* variant change — Catppuccin shades each accent
+    // per variant, so one id renders different swatches in Latte and Mocha. 1:1 with
+    // `accent-names`, which the `ColorDotGrid` turns into per-dot tooltips.
+    in property <[brush]> accent-colors;
+    in property <[string]> accent-names;
+    in-out property <int> accent-idx;
+
+    // The palette is coming from Plasma's live colour scheme rather than the static
+    // Light/Dark tables: KDE Breeze, variant "System", and a parsed `kdeglobals`. The
+    // Accent Color row hides its dot grid on it, the OS having already picked one.
+    in property <bool> kde-system-active;
+
+    // 1:1 with `material_you::SchemeStyle::all()`, index 0 being None. Visible only
+    // under the Material 3 theme.
+    in-out property <int> color-style-idx;
+
+    // A non-`None` Color Style *and* a seed the coordinator actually extracted from the
+    // artwork. Prepends the dynamic-primary swatch to `accent-colors`, and flips the
+    // Color Style row's description so it's clear whether dynamic colour is live.
+    in property <bool> material-you-active;
+
+    // Fired on chip / dot click. Rust resolves idx → id, persists, applies the new
+    // palette and writes the lists back.
+    callback theme-changed(int);
+    callback variant-changed(int);
+    callback accent-changed(int);
+    callback color-style-changed(int);
+
+    // Hides the "Match Unfocused Window Background" row entirely off-KDE — the
+    // behaviour mirrors KDE's window-decoration fade and means nothing elsewhere.
+    in property <bool> match-unfocused-supported;
+
+    in-out property <bool> match-unfocused-bg;
+    callback match-unfocused-bg-changed(bool);
+
+    // Whether the tray subsystem runs at all. Never written from Slint: the switch is
+    // `manual: true` and routes through the `restart-tray` Dialog, the change only
+    // applying next launch. Opt-in.
+    in property <bool> tray-enabled;
+
+    // A tray icon was actually created. "Close to Tray" greys out rather than hiding when false —
+    // either the tray is off, or the session has no tray host (vanilla GNOME without AppIndicator)
+    // — because the close handlers then fall back to quitting and the toggle would do nothing.
+    in property <bool> tray-active;
+
+    // Applied synchronously to a process-global atomic so `window_chrome`'s close handlers see it
+    // on the next close, then persisted on the blocking pool. Off by default; with no tray icon
+    // active the close handlers quit regardless, so this can never strand the window.
+    in-out property <bool> close-to-tray: false;
+    callback close-to-tray-changed(bool);
+
+    // Persist-only from here — what applies it is `boot::ui_setup`, which turns it into
+    // `Nav.suppress-enter-animation` before the window is shown. Off by default, so the
+    // launch a release already ships is the one that keeps playing.
+    in-out property <bool> skip-startup-animation: false;
+    callback skip-startup-animation-changed(bool);
+
+    // Applied to `PlayerState.gapless_enabled` synchronously — the next 500 ms monitor
+    // tick picks it up — then persisted on the blocking pool.
+    in-out property <bool> gapless-playback: true;
+    callback gapless-playback-changed(bool);
+
+    // Applied to the running MV player synchronously, then persisted on the blocking pool.
+    // On by default; a platform with no usable hardware decoder falls back to software and
+    // the player logs that once rather than turning the setting off.
+    in-out property <bool> hardware-video-decoding: true;
+    callback hardware-video-decoding-changed(bool);
+
+    // 0 = None, 1 = Equalizer; read by `PlayButton`. Rust maps idx ↔ token in both
+    // directions, so a malformed disk value can't pin the chip to an invalid index.
+    in-out property <int> play-button-animation-idx: 0;
+    callback play-button-animation-changed(int);
+
+    // Selected quality for `NetEase` cloud streams; local files keep their source format.
+    in-out property <string> cloud-quality: "exhigh";
+    callback cloud-quality-changed(string);
+
+    // Each `*-changed` applies to the live playback engine synchronously before persisting on the
+    // blocking pool — the equalizer / ReplayGain two-phase shape. The duration is in **seconds**
+    // here, the slider's natural unit; Rust converts to the milliseconds the backend and
+    // `settings.json` use, and the bounds are seeded from `player::crossfade::{MIN,MAX}`.
+    // `-changed` fires live during a drag and only applies; `-committed` fires on release and
+    // persists — the `set-volume` / `commit-volume` split.
+    in-out property <bool> crossfade-enabled: false;
+    callback crossfade-enabled-changed(bool);
+    in-out property <float> crossfade-duration-secs: 2.0;
+    in property <float> crossfade-min-secs;
+    in property <float> crossfade-max-secs;
+    callback crossfade-duration-changed(float /* seconds */);
+    callback crossfade-duration-committed(float /* seconds */);
+    in-out property <bool> crossfade-skip-same-album: true;
+    callback crossfade-skip-same-album-changed(bool);
+    in-out property <bool> crossfade-manual: false;
+    callback crossfade-manual-changed(bool);
+    in-out property <bool> crossfade-fade-on-pause: false;
+    callback crossfade-fade-on-pause-changed(bool);
+
+    // Applied to the engine synchronously, acted on at the next track. A rate change then plays
+    // without a crossfade, since a fade can't cross the reopen it needs. The row is hidden where
+    // following the rate changes nothing, which Rust decides per platform.
+    in-out property <bool> output-follow-rate: false;
+    callback output-follow-rate-changed(bool);
+    in property <bool> follow-rate-supported;
+
+    // Shared (0) or exclusive (1), and which card an exclusive claim takes, and shared output too
+    // where `shared-device-supported`. Rust lists the cards, whose names are data, and applies a
+    // pick off the UI thread, since claiming a card blocks. The rows are hidden where the platform
+    // has no exclusive backend.
+    in property <bool> exclusive-supported;
+    in property <bool> shared-device-supported;
+    // The picker's first row where it chooses for shared output too, standing for no saved card.
+    // Translated here because the rest of the list is Rust's.
+    pure callback output-device-system-default() -> string;
+    output-device-system-default => {
+        return @tr("System Default");
+    }
+    in-out property <int> output-mode-idx: 0;
+    out property <bool> exclusive-chosen: root.exclusive-supported && root.output-mode-idx == 1;
+    // The engine's own answer: exclusive output always follows the file's rate, and the toggle
+    // counts only where it can do anything.
+    out property <bool> rate-follows: root.exclusive-chosen
+        || (root.follow-rate-supported && root.output-follow-rate);
+    callback output-mode-changed(int);
+    // The confirmed Make Bit-Perfect from shared output: a pick of exclusive and the reset, in that
+    // order in one task, since the reset keeps the volume only where the claim carries it.
+    callback output-switch-to-bit-perfect();
+    in property <[string]> output-device-names;
+    in-out property <int> output-device-idx: -1;
+    callback output-device-changed(int);
+    // Asked as the picker mounts, as it opens and while it is on screen: a card plugged in or
+    // pulled announces nothing, so a list taken earlier can be missing it. Returns the
+    // `output-devices-revision` the answer will be published under, which the picker's popup
+    // waits for.
+    callback list-output-devices() -> int;
+    in property <int> output-devices-revision;
+    // What a claim does where the card lacks the file's rate: play shared (0), or resample to one
+    // of the card's rates and keep it (1). Applied like the pickers above, since a change reopens
+    // the claim, and hidden where the backend can't ask a card which other rates it runs.
+    in property <bool> rate-fallback-supported;
+    in-out property <int> output-rate-fallback-idx: 0;
+    callback output-rate-fallback-changed(int);
+    // The saved card is not among those listed.
+    in property <bool> output-device-missing;
+    // How an exclusive writer paces the card: a period chip, -1 where the saved period matches
+    // none of them, and polling in place of the card's events where the platform tells the two
+    // apart. Applied like the pickers above, since either reopens the card.
+    in-out property <int> output-period-idx: 2;
+    callback output-period-changed(int);
+    in property <bool> polling-supported;
+    in-out property <bool> output-polling: false;
+    callback output-polling-changed(bool);
+    // The card's own control carrying the volume, so the samples reach it untouched. Applied like
+    // the pickers above: a change reopens the claim, since moving the gain between the samples and
+    // the card mid-stream could play a period at the wrong level.
+    in property <bool> hardware-volume-supported;
+    in-out property <bool> output-hardware-volume: false;
+    callback output-hardware-volume-changed(bool);
+    // Give the card back once a pause has held it long enough. Not one of the pickers: it changes
+    // nothing about the claim, so a toggle applies at once and reopens nothing.
+    in-out property <bool> output-release-paused: false;
+    callback output-release-paused-changed(bool);
+    // Lands on the Playback tab, where the signal path reads in full: the quality chip, its
+    // overflow-menu row and the refused claim's toast action.
+    callback open-signal-path();
+    // The silence a reopen onto a new rate writes first, for the DACs that mute while they relock.
+    // The drag only moves the readout: nothing hears the value until the next rate change, so it
+    // goes to the engine and to disk together on release.
+    in-out property <float> output-resync-ms: 200;
+    in property <float> output-resync-max-ms: 1000;
+    callback output-resync-committed(int /* milliseconds */);
+
+    // Whether lyrics run at all, the Now Playing header's switch being its twin. Declared false so a
+    // settings read that fails does not hand the Up Next column to a panel nobody asked for.
+    in-out property <bool> lyrics-enabled: false;
+    callback lyrics-enabled-changed(bool);
+
+    // Whether a track carrying no words of its own may be looked up online. Declared false so a
+    // settings read that fails leaves a local-only install local-only. **Nothing in Slint gates on
+    // it either**: `library::lyrics` refuses on the Rust
+    // shadow, and this is the control surface rather than the answer. The panel reads it once, to
+    // choose between "nothing found" and "the lookup is off".
+    in-out property <bool> lyrics-online-enabled: false;
+    callback lyrics-online-enabled-changed(bool);
+
+    // Whether the panel draws how a line sounds under the line itself. Declared true, unlike its
+    // neighbour: it reaches nothing and costs nothing, drawing only under a script the reader
+    // cannot sound out, so a settings read that fails leaves it on rather than hiding a feature.
+    // **The Now Playing menu writes the same field**, which is why both surfaces go through one
+    // `SharedFlag` rather than through whichever of them the user touched last.
+    in-out property <bool> lyrics-romanization-shown: true;
+    callback lyrics-romanization-shown-changed(bool);
+
+    // Persists, then flips the `FolderWatcher` on the tokio runtime rather than the
+    // blocking pool — the start needs an async DB query before it can take the
+    // parking_lot lock. **On by default**: consumer players auto-watch with no toggle
+    // at all, and shipping it off stranded new users in a stale-UI failure mode.
+    in-out property <bool> watch-for-file-changes: true;
+    callback watch-for-file-changes-changed(bool);
+
+    // Logical pixels, mirrored into `Theme.shell-radius` on every change so the mantle shell and
+    // content panel repaint reactively. Rust clamps and snaps to the nearest chip preset on read,
+    // so the chip selection matches what's painted even after a hand-edited `settings.json`.
+    in-out property <int> corner-radius: 6;
+    callback corner-radius-changed(int);
+
+    in property <[string]> ui-scale-options;
+    in-out property <int> ui-scale-index: 1;
+    callback ui-scale-changed(int);
+
+    // 0 = Windows (its caption glyphs), 1 = macOS (traffic lights with hover-reveal glyphs),
+    // 2 = KDE (Breeze's glyphs and hover disc).
+    // Mirrored into `Theme.titlebar-button-style` so `custom-titlebar.slint` reads it through
+    // `Theme`, the `shell-radius` precedent. Inert under the native titlebar.
+    in-out property <int> titlebar-button-style: 0;
+    callback titlebar-button-style-changed(int);
+
+    // 0 = Right (Windows / KDE), 1 = Left (macOS). Independent of the style — all four
+    // combinations render with close always at the outer window corner.
+    in-out property <int> titlebar-button-side: 0;
+    callback titlebar-button-side-changed(int);
+
+    // The miniplayer's captions, in `titlebar-button-style`'s tokens and mirrored into
+    // `MiniPlayer.button-style` the same way. Live under the native titlebar too, the miniplayer
+    // dropping the frame.
+    in-out property <int> mini-player-button-style: 0;
+    callback mini-player-button-style-changed(int);
+
+    // The outline a frameless window draws where an OS frame would: under the custom titlebar
+    // always, and for the miniplayer under the native one. The outline reads the switch directly,
+    // so Rust only persists it.
+    in-out property <bool> window-border-shown: true;
+    callback window-border-shown-changed(bool);
+
+    // The System swatch followed by the theme's accents in the live variant's shade, re-seeded on
+    // every palette change, since a variant reshades both. 1:1 with `window-border-names`, whose
+    // first entry is empty: the grid names the System swatch itself, so it stays translated.
+    in property <[brush]> window-border-colors;
+    in property <[string]> window-border-names;
+    in-out property <int> window-border-color-idx;
+    callback window-border-color-changed(int);
+
+    // Mirrors `SettingsData.overflow_buttons`, a `Vec<String>` of ids. Discrete bools
+    // rather than a `[string]` model so the callback can name which button toggled
+    // without diffing arrays; Rust applies the add/remove and persists. The
+    // now-playing bar reads them to gate inline-vs-overflow visibility.
+    in-out property <bool> overflow-favorite;
+    in-out property <bool> overflow-repeat;
+    in-out property <bool> overflow-shuffle;
+    in-out property <bool> overflow-pin;
+    in-out property <bool> overflow-queue;
+    in-out property <bool> overflow-quality;
+    callback overflow-buttons-changed(string /*id*/, bool /*overflow-on*/);
+
+    // `language-names` carries native-name labels, always in the language's own script and never
+    // re-translated; `language-codes` the matching `SUPPORTED_LOCALES` codes. The change callback
+    // resolves idx → code and calls `slint::select_bundled_translation` synchronously, which
+    // re-renders every `@tr` on the next frame, then spawns the disk persist.
+    in property <[string]> language-names;
+    in property <[string]> language-codes;
+    in-out property <int>  language-idx;
+    in property <string> locale-code;
+    callback language-changed(int);
+
+    // Opens the contributor profiles from Settings → About.
+    callback open-adapter-author();
+    callback open-framework-author();
+
+    // The About card's "Welcome Guide" row, handled in `crates/nekonetease-views/src/ui/onboarding/`.
+    callback run-onboarding();
+
+    // The Diagnostics card's three rows, all handled in `crates/nekonetease-views/src/ui/settings/diagnostics.rs`.
+    // `open-log-folder` is also the "crashed last run" toast's action, via `Notifications.action`.
+    callback open-log-folder();
+    callback save-diagnostics-report();
+    // Applied live via `LoggerHandle::set_new_spec` — no relaunch — then persisted. Inert when
+    // `RUST_LOG` is set, which wins outright; see `services::logging`.
+    in-out property <bool> verbose-logging: false;
+    callback verbose-logging-changed(bool);
+
+    // Everything below is a `pure callback` wrapping an `@tr` literal, Slint 1.16 exposing no
+    // Rust-callable `tr(...)`: Rust invokes these at push time so each string resolves in the
+    // locale selected right then, not the one active when the notification was built.
+    pure callback watcher-disabled-title() -> string;
+    watcher-disabled-title => {
+        return @tr("File watching disabled");
+    }
+    pure callback watcher-disabled-message() -> string;
+    watcher-disabled-message => {
+        return @tr("Tracks won't reflect disk changes until you re-enable it.");
+    }
+
+    // Surfaced on a watcher-overflow rescan (`FileEvent::RescanNeeded`).
+    pure callback library-resyncing-title() -> string;
+    library-resyncing-title => {
+        return @tr("Library re-syncing");
+    }
+    pure callback library-resyncing-message() -> string;
+    library-resyncing-message => {
+        return @tr("Filesystem event burst — rescanning your folders.");
+    }
+    pure callback artwork-restoring-title() -> string;
+    artwork-restoring-title => {
+        return @tr("Restoring cover art");
+    }
+    pure callback artwork-restoring-message() -> string;
+    artwork-restoring-message => {
+        return @tr("Some cover art was missing. NekoNetease is restoring it from your music files.");
+    }
+
+    // The updater's three toasts. "Available" and "installed" carry an action, Install and
+    // Restart; "failed" has none and surfaces the error in its body.
+    pure callback update-available-title() -> string;
+    update-available-title => {
+        return @tr("Update available");
+    }
+    pure callback update-available-message(string /*version*/) -> string;
+    update-available-message(version) => {
+        return @tr("NekoNetease {} is ready to install.", version);
+    }
+    pure callback update-install-action-label() -> string;
+    update-install-action-label => {
+        return @tr("Install");
+    }
+    pure callback update-installed-title() -> string;
+    update-installed-title => {
+        return @tr("Update installed");
+    }
+    pure callback update-installed-message() -> string;
+    update-installed-message => {
+        return @tr("Restart NekoNetease to start using the new version.");
+    }
+    pure callback update-restart-action-label() -> string;
+    update-restart-action-label => {
+        return @tr("Restart");
+    }
+    pure callback update-failed-title() -> string;
+    update-failed-title => {
+        return @tr("Update failed");
+    }
+    // `kind` mirrors `FailureKind::as_kind_str`, which classifies the underlying
+    // `AppError`: "network", "signature", "parse", "io", or anything else. The bank
+    // lives here so each variant goes through `@tr`; the raw error was already logged
+    // at the send site.
+    pure callback update-failed-reason(string /*kind*/) -> string;
+    update-failed-reason(kind) => {
+        if (kind == "network") {
+            return @tr("Couldn't reach the update server. Check your internet connection.");
+        }
+        if (kind == "signature") {
+            return @tr("Signature check failed. The downloaded update may be corrupted; please try again.");
+        }
+        if (kind == "parse") {
+            return @tr("The update server returned an unexpected response.");
+        }
+        if (kind == "io") {
+            return @tr("Couldn't write the downloaded update to disk.");
+        }
+        return @tr("Update failed. See logs for details.");
+    }
+
+    // Saving a diagnostics bundle from the Diagnostics card.
+    pure callback diagnostics-saved-title() -> string;
+    diagnostics-saved-title => {
+        return @tr("Diagnostics report saved");
+    }
+    pure callback diagnostics-saved-message(string /*path*/) -> string;
+    diagnostics-saved-message(path) => {
+        return @tr("Saved to {}", path);
+    }
+    pure callback diagnostics-failed-title() -> string;
+    diagnostics-failed-title => {
+        return @tr("Couldn't save the diagnostics report");
+    }
+    pure callback diagnostics-failed-message() -> string;
+    diagnostics-failed-message => {
+        return @tr("See the log for details.");
+    }
+
+    // Pushed once on the launch after a panic, by `crash_report::take_unseen`.
+    // The action label deliberately repeats the Diagnostics card's button, both
+    // because it goes to the same place and so the two share one msgid.
+    pure callback crash-report-title() -> string;
+    crash-report-title => {
+        return @tr("NekoNetease crashed last time");
+    }
+    pure callback crash-report-message() -> string;
+    crash-report-message => {
+        return @tr("A crash report was written. Open the log folder to find it.");
+    }
+    pure callback crash-report-action-label() -> string;
+    crash-report-action-label => {
+        return @tr("Open Folder");
+    }
+
+    // Pushed by `tasks::audio_health` when the output device goes away. No action
+    // button — there is no device picker to send the user to.
+    pure callback audio-device-lost-title() -> string;
+    audio-device-lost-title => {
+        return @tr("Audio device disconnected");
+    }
+    pure callback audio-device-lost-message() -> string;
+    audio-device-lost-message => {
+        return @tr("Playback won't be audible until you reconnect it and restart NekoNetease.");
+    }
+
+    // The import/export header pills on the Playlists view.
+    pure callback playlist-import-title(int /*imported*/) -> string;
+    playlist-import-title(imported) => {
+        return @tr("{n} playlist imported" | "{n} playlists imported" % imported);
+    }
+    pure callback playlist-import-message(int /*tracks*/, int /*missing*/) -> string;
+    playlist-import-message(tracks, missing) => {
+        // Pluralized on the track count; the no-missing branch shares its msgid with
+        // `add-to-playlist-message`.
+        return missing > 0
+            ? @tr("{n} track added · {} missing" | "{n} tracks added · {} missing" % tracks, missing)
+            : @tr("{n} track added" | "{n} tracks added" % tracks);
+    }
+    pure callback playlist-import-failed-title() -> string;
+    playlist-import-failed-title => {
+        return @tr("Import failed");
+    }
+    pure callback playlist-import-failed-message() -> string;
+    playlist-import-failed-message => {
+        return @tr("Couldn't read the selected playlist file(s).");
+    }
+
+    pure callback playlist-export-title(int /*exported*/) -> string;
+    playlist-export-title(exported) => {
+        return @tr("{n} playlist exported" | "{n} playlists exported" % exported);
+    }
+    pure callback playlist-export-message(string /*path*/) -> string;
+    playlist-export-message(path) => {
+        return @tr("Saved to {}", path);
+    }
+    pure callback playlist-export-failed-title() -> string;
+    playlist-export-failed-title => {
+        return @tr("Export failed");
+    }
+    pure callback playlist-export-failed-message() -> string;
+    playlist-export-failed-message => {
+        return @tr("Couldn't write the playlist files.");
+    }
+    pure callback playlist-export-too-large-message() -> string;
+    playlist-export-too-large-message => {
+        return @tr("These playlists are too large for one .zip file. Export fewer at a time.");
+    }
+
+    // Titles for the generic backend-failure toasts coming through the
+    // `services::toast` bridge, resolved by toast kind. The dynamic detail — a path or
+    // an error message — rides on the body and is not translated.
+    pure callback toast-playback-error-title() -> string;
+    toast-playback-error-title => {
+        return @tr("Playback error");
+    }
+    // A restricted start is informational, not a failure: the music is playing, just not all of
+    // it. The three verdicts stay separate so the title can say which one applies.
+    pure callback toast-trial-playback-title() -> string;
+    toast-trial-playback-title => {
+        return @tr("Playing a preview");
+    }
+    pure callback toast-vip-required-title() -> string;
+    toast-vip-required-title => {
+        return @tr("Membership required");
+    }
+    pure callback toast-purchase-required-title() -> string;
+    toast-purchase-required-title => {
+        return @tr("Purchase required");
+    }
+    // A lower tier than requested still plays, so this is informational rather than a failure.
+    pure callback toast-quality-downgraded-title() -> string;
+    toast-quality-downgraded-title => {
+        return @tr("Playing at a lower quality");
+    }
+    // The two refusal verdicts a song can carry. "No licence" is the service holding none for the
+    // recording; "can't be played" is everything else the detail proved — withdrawn, no play right,
+    // or a region the response never names.
+    pure callback toast-playback-no-copyright-title() -> string;
+    toast-playback-no-copyright-title => {
+        return @tr("No licence for this song");
+    }
+    pure callback toast-playback-unavailable-title() -> string;
+    toast-playback-unavailable-title => {
+        return @tr("This song can't be played");
+    }
+    pure callback toast-operation-failed-title() -> string;
+    toast-operation-failed-title => {
+        return @tr("Something went wrong");
+    }
+    pure callback toast-lyrics-saved-title() -> string;
+    toast-lyrics-saved-title => {
+        return @tr("Lyrics saved");
+    }
+    // A music video written to Downloads; the body is the file's own name.
+    pure callback toast-download-saved-title() -> string;
+    toast-download-saved-title => {
+        return @tr("Download saved");
+    }
+    pure callback toast-copied-title() -> string;
+    toast-copied-title => {
+        return @tr("Copied to clipboard");
+    }
+    pure callback toast-nothing-to-copy-title() -> string;
+    toast-nothing-to-copy-title => {
+        return @tr("Nothing to copy");
+    }
+    // The account card's daily 云贝 check-in; the new balance paints in the card itself.
+    pure callback toast-check-in-title() -> string;
+    toast-check-in-title => {
+        return @tr("Check-in complete");
+    }
+    // The body is translated as well: the detail is only the refusing device's name, empty where
+    // it couldn't be found. The reason is left to the Output settings, where it reads in full.
+    pure callback toast-exclusive-refused-title() -> string;
+    toast-exclusive-refused-title => {
+        return @tr("Exclusive output unavailable");
+    }
+    pure callback toast-exclusive-refused-message(string /* device */) -> string;
+    toast-exclusive-refused-message(device) => {
+        return device == ""
+            ? @tr("Exclusive output was refused, so NekoNetease is playing shared for now. The Output section of Settings says why.")
+            : @tr("{} refused exclusive output, so NekoNetease is playing shared for now. The Output section of Settings says why.", device);
+    }
+    pure callback toast-exclusive-refused-action-label() -> string;
+    toast-exclusive-refused-action-label => {
+        return @tr("Details");
+    }
+    // The one toast kind whose body is localized too — a restart that couldn't
+    // relaunch carries no path or error worth showing, only an instruction.
+    pure callback toast-restart-required-title() -> string;
+    toast-restart-required-title => {
+        return @tr("Restart Required");
+    }
+    pure callback toast-restart-required-message() -> string;
+    toast-restart-required-message => {
+        return @tr("NekoNetease couldn't relaunch itself. Close and reopen it to apply the change.");
+    }
+
+    // The Add-to-Playlist picker's commit toast: title pluralizes on playlists,
+    // message on tracks added.
+    pure callback add-to-playlist-title(int /*playlists*/) -> string;
+    add-to-playlist-title(playlists) => {
+        return @tr("Added to {n} playlist" | "Added to {n} playlists" % playlists);
+    }
+    pure callback add-to-playlist-message(int /*tracks*/) -> string;
+    add-to-playlist-message(tracks) => {
+        return @tr("{n} track added" | "{n} tracks added" % tracks);
+    }
+
+    // `tag-multiple-values` is the placeholder a disagreeing field shows in a batch
+    // edit; the rest are the Save completion toast.
+    pure callback tag-multiple-values() -> string;
+    tag-multiple-values => {
+        return @tr("‹multiple values›");
+    }
+    pure callback tag-edit-title(int /*updated*/) -> string;
+    tag-edit-title(updated) => {
+        return @tr("{n} track updated" | "{n} tracks updated" % updated);
+    }
+    pure callback tag-edit-message(int /*failed*/, int /*unsupported*/) -> string;
+    tag-edit-message(failed, unsupported) => {
+        if (failed > 0) {
+            return @tr("{n} file failed" | "{n} files failed" % failed);
+        }
+        if (unsupported > 0) {
+            return @tr("{n} file has unsupported fields" | "{n} files have unsupported fields" % unsupported);
+        }
+        return "";
+    }
+    // The message above names a count and nothing else, which tells a user their edit half-landed
+    // without telling them what to do about it. This one is reached instead wherever every file in
+    // the batch fell out the same way, which is the usual shape: one album, one format, one field.
+    pure callback tag-unsupported-message(string /*fields*/, string /*format*/) -> string;
+    tag-unsupported-message(fields, format) => {
+        return @tr("{} can't be saved to {} files", fields, format);
+    }
+    // Indexed by `TagField::label_index`: `PLAIN_TAG_FIELDS` in order, then the ten credit roles in
+    // `ROLES` order. An inline literal list because `@tr` resolves at codegen and a `[string]`
+    // seeded from Rust would arrive untranslated, so Rust sends indices and reads the labels back.
+    // A label out of order names the wrong field and nothing else would notice, which is what
+    // `tags_tests.rs::the_slint_label_lists_line_up_with_the_rust_order` pins.
+    out property <[string]> tag-field-labels: [
+        @tr("Title"), @tr("Artist"), @tr("Album"), @tr("Album Artist"), @tr("Genre"),
+        @tr("Year"), @tr("Track"), @tr("Track Total"), @tr("Disc"), @tr("Disc Total"),
+        @tr("Original Year"), @tr("BPM"), @tr("Comment"), @tr("Subtitle"), @tr("Disc Subtitle"),
+        @tr("Grouping"), @tr("Work"), @tr("Movement"), @tr("Movement Number"),
+        @tr("Movement Total"), @tr("Key"), @tr("Mood"), @tr("Language"), @tr("ISRC"),
+        @tr("Copyright"), @tr("Record Label"), @tr("Catalog Number"), @tr("Barcode"),
+        @tr("Media"), @tr("Release Type"), @tr("Release Country"), @tr("Compilation"),
+        @tr("Lyrics"), @tr("Rating"),
+        @tr("Composer"), @tr("Lyricist"), @tr("Arranger"), @tr("Conductor"), @tr("Performer"),
+        @tr("Remixer"), @tr("Producer"), @tr("Engineer"), @tr("Mixer"), @tr("DJ Mixer"),
+    ];
+    pure callback tag-edit-failed-title() -> string;
+    tag-edit-failed-title => {
+        return @tr("Couldn't save tags");
+    }
+    pure callback tag-edit-failed-message() -> string;
+    tag-edit-failed-message => {
+        return @tr("No tracks were updated.");
+    }
+}
+
+// Account state for the direct NetEase client. Credentials stay in the views layer and are never
+// part of application settings; this global carries display state and intent callbacks only.
+export global CloudAccount {
+    in-out property <string> account-name;
+    // Decoded from the profile; the Settings page is the only consumer today.
+    in-out property <int> account-level: 0;
+    // Fetched for the signed-in account and cleared on sign-out. `beans-loaded` keeps the row
+    // out of the card until the first answer, so a signed-in card never shows a false zero.
+    in-out property <int> bean-balance: 0;
+    in-out property <bool> beans-loaded: false;
+    in-out property <bool> signed-today: false;
+    in-out property <bool> beans-busy: false;
+    in-out property <bool> account-vip: false;
+    // Session-scoped: fetched from the profile URL and never persisted. Empty when signed out.
+    in-out property <image> avatar-image;
+    in-out property <string> notice;
+    in-out property <bool> logged-in;
+    in-out property <bool> remember-available: true;
+    in-out property <bool> busy;
+    in-out property <image> qr-image;
+    in-out property <int> qr-status: 0;
+    in-out property <bool> qr-busy;
+    // SMS login state. The cooldown is the seconds still to wait before another code may be
+    // requested.
+    in-out property <bool> captcha-sending;
+    in-out property <int> captcha-cooldown: 0;
+    // Parallel device rows, so the section needs no new model type in the main file.
+    in-out property <[string]> device-keys;
+    in-out property <[string]> device-labels;
+    in-out property <[string]> device-details;
+    in-out property <[bool]> device-current;
+    in-out property <bool> devices-loaded;
+    in-out property <bool> devices-busy;
+    in-out property <string> device-notice;
+    callback login-phone(string /* phone */, string /* country code */, string /* password */);
+    callback login-email(string /* email */, string /* password */);
+    callback send-login-captcha(string /* phone */, string /* country code */);
+    callback login-phone-captcha(
+        string /* phone */, string /* country code */, string /* captcha */);
+    callback start-qr-login();
+    callback cancel-qr-login();
+    callback qr-page-active-changed(bool /* active */);
+    callback refresh-devices();
+    callback revoke-device(string /* key */);
+    callback check-in();
+    callback logout();
+    // 0 profile, 1 messages, 2 notifications: a mode rather than an id, so the label text
+    // stays a Slint literal and each Rust arm picks its own target.
+    callback open-social(int /* page */);
+}

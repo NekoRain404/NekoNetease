@@ -1,0 +1,277 @@
+import { PlaylistRow, PlaylistGridRow, PlaylistCommentRow, TrackListRow, TrackColumns, PlayerVm, SyncConflictRow } from "../models.slint";
+import { Player } from "player.slint";
+
+export enum PlaylistPlaybackAction { unavailable, start, pause, resume }
+
+// The Playlist grid view, on the `Albums` / `Artists` ownership contract: Rust owns the flat list
+// and `apply-filter` re-derives `grid-rows` with no DB hit. Sorted by most-recently-updated and
+// staying that way — the view exposes no sort UI.
+export global Playlists {
+    // Collected, Created and Roaming. Recommendations retired to the Recommended page; a
+    // `views.json` written before that still holds its 2, which `fold_retired_music_library_category`
+    // folds onto Collected (and moves Roaming from 3 to 2) on read.
+    out property <int> category-count: 3;
+    in-out property <int> category: 0;
+    callback category-changed(int);
+    callback open-special(int);
+    callback start-roaming(int);
+    callback stop-roaming();
+    callback dislike-roaming-current();
+    in-out property <int> roaming-mode: -1;
+    in-out property <bool> roaming-loading: false;
+    in-out property <bool> roaming-feedback-pending: false;
+    in-out property <string> roaming-error;
+    in-out property <[PlaylistGridRow]> grid-rows;
+    // The flat list behind the Add-to-Playlist submenu, kept in step with `grid-rows` so the
+    // submenu always lists every playlist in display order.
+    in-out property <[PlaylistRow]> rows;
+    // `-1` until fetched; see `Albums.total-count`.
+    in-out property <int> total-count: -1;      // pre-filter playlist count
+    in-out property <bool> cloud-loading: false;
+    in-out property <string> cloud-error;
+    in-out property <int> retry-special: -1;
+    in-out property <int> columns: 4;           // view-computed; always >= 1
+    in-out property <string> filter;
+    in-out property <string> sort-field: "updated"; // "name" | "track_count" | "updated"
+    in-out property <string> sort-dir: "desc";
+    // The grid's scroll position. It lives here because the detail **unmounts** the grid branch:
+    // the `ListView` loses `viewport-y` with its instance, so backing out of a playlist landed on
+    // the first row again however far down the user had scrolled.
+    in-out property <length> scroll-offset: 0;
+
+    callback columns-changed(int);
+    callback apply-filter(string);
+    callback retry-cloud();
+    callback open-playlist(string /*NetEase playlist_id*/);
+    // Lazy per-card lookup against the shared grid tier, the `Albums.request-cover`
+    // contract — only on-screen cards resolve, and a miss schedules rather than decoding.
+    pure callback request-cover(string /*artwork_path*/, int /*generation*/) -> image;
+    in property <int> covers-generation: 0;
+    // The row tier instead, backing the mosaic picker's small candidate tiles: no point
+    // paying for grid-size decodes at dialog-tile size.
+    pure callback request-row-cover(string /*artwork_path*/) -> image;
+    callback section-active-changed(bool);
+
+    // Fired by the `Dialog.accepted` dispatcher on confirm. **The dialogs themselves are populated
+    // inline in Slint markup**, a synchronous `set_open(true)` inside a click handler tripping
+    // Slint's property-recursion guard.
+    callback create-playlist(
+        string /*name*/,
+        string /*description (empty ⇒ no description)*/,
+        [int] /*pending_track_ids*/,
+    );
+    callback rename-playlist(
+        int /*id*/,
+        string /*new_name*/,
+        string /*description (empty ⇒ clear)*/,
+    );
+    callback delete-playlist(int /*id*/);
+    // The card menu's multi-select arm, through `Dialog.open-delete-playlists`. One refetch and
+    // one selection clear for the whole batch, where looping `delete-playlist` would do both per
+    // playlist.
+    callback delete-playlists([int] /*ids*/);
+
+    // 1–4 paths from the playlist's own tracks; Rust composes the collage and persists it. An
+    // empty selection clears the custom thumbnail and reverts to auto first-track.
+    callback apply-mosaic(int /*id*/, [string] /*paths*/);
+    callback clear-artwork(int /*id*/);
+
+    // Rust mutates the model through `set_row_data`, Slint having no ergonomic push/remove.
+    // `toggle-add-pick` no-ops on a fully-contained row; `set-all` flips only enabled ones.
+    callback toggle-add-pick(int /*playlist_id*/);
+    callback set-all-add-picks(bool /*selected*/);
+
+    // Rust reads the ticked enabled rows and adds `Dialog.pending-track-ids` into each.
+    callback add-tracks-to-selected();
+    // Tags cross as text because a cloud playlist id exceeds Slint's `int`.
+    callback update-cloud-tags(string /*remote_id*/, string /*comma-joined tags*/);
+
+    // Rust owns the array mutation for the same reason, capping the selection at four.
+    callback toggle-mosaic-candidate(string /*artwork_path*/);
+
+    // For the grid card's Rename overlay, which carries only the id — `PlaylistGridRow` has no
+    // description. Resolved from the cached `PlaylistStats`, so it is safe from a click handler.
+    pure callback row-name(int /*playlist_id*/) -> string;
+    pure callback row-description(int /*playlist_id*/) -> string;
+
+    // `PlaylistDetail.request-edit-artwork` against an explicit id, for the grid card's
+    // overlay: the detail isn't necessarily open, so `PlaylistDetail.cover` would be stale.
+    callback request-edit-artwork-for(int /*playlist_id*/);
+
+    // Rust runs the list and the per-playlist overlap counts in parallel, fills the rows, and only
+    // then flips `Dialog.open`, so it appears already populated. `exclude-playlist-id >= 0` filters
+    // that one out, so Playlist Detail can't offer the open playlist; -1 shows all.
+    callback request-add-to-playlist(
+        [int] /*track_ids*/,
+        int /*exclude_playlist_id*/,
+    );
+
+    // The cloud twin: the picker lists only the account's own (Created) playlists, because those
+    // are the ones a track may be written into. `exclude-id` mirrors the local signature but is
+    // -1 from cloud rows — a NetEase playlist id does not fit Slint's `int`.
+    callback request-add-cloud-tracks(
+        [string] /*remote_song_ids*/,
+        int /*exclude_playlist_id*/,
+    );
+
+    // M3U8 import / export. Both are pure Rust flows over native dialogs, so unlike
+    // create/rename they never write `Dialog.*` synchronously from a click handler.
+
+    // Picks files, imports each into a new playlist, toasts a summary.
+    callback import-playlists();
+
+    // The `request-add-to-playlist` populate-then-open shape, every row starting unticked —
+    // exporting is opt-in.
+    callback request-export-playlists();
+
+    // Rust reads the ticked rows, asks where to save, and writes one `.m3u8` or a zip of several.
+    callback export-selected-playlists();
+
+    // Rust mutates the model, as above.
+    callback toggle-export-pick(int /*playlist_id*/);
+    callback set-all-export-picks(bool /*selected*/);
+}
+
+// The full Playlist Detail view: `playlist-id == -1` shows the grid, `>= 0` swaps in the detail,
+// the `Nav.now-playing-open` shape. Rust owns `tracks`; `playlist` is the header data. The table is
+// the shared `TrackList`, so the column / sort / selection shape mirrors the `Tracks` / `Browse` /
+// `AlbumDetail` globals under its own persistence key.
+//
+// **Drag-to-reorder is gated to an ascending `"position"` sort** — reordering a list sorted by
+// something else means nothing. No header cell asks for that field, so the third click on a column
+// hands it back (`ui::callbacks::next_sort_with_natural`); without one, one click on Title retires
+// reordering for the whole install. `drag-source` / `drop-slot` mirror `Queue`'s reorder state,
+// living on `DraggableTrackList` and two-way bound here. Rust never writes them mid-drag, only
+// clearing them when it rebuilds `tracks` under one; the view clears them on `init` too.
+export global PlaylistDetail {
+    in-out property <int> playlist-id: -1;
+    // See `AlbumDetail.restoring`.
+    in-out property <bool> restoring: false;
+    // Set from the click until the track list lands: the header the grid already held is up and
+    // the rows are still coming. Cleared by the fetch's own hop, and by a close.
+    in-out property <bool> loading: false;
+    in-out property <PlaylistRow> playlist;
+    in-out property <[TrackListRow]> tracks;
+    in-out property <bool> cloud-collection: false;
+    // Whether the open cloud playlist belongs to the signed-in account. Only then do its rows
+    // offer removal, since a collected playlist is read-only on NetEase.
+    in-out property <bool> cloud-owned: false;
+    // Collected state of a cloud playlist; an owned playlist is not collectable from its page.
+    in-out property <bool> cloud-subscribed: false;
+    in-out property <bool> cloud-subscribe-busy: false;
+    // The playlist's tags, comma-joined, as the edit dialog spells them.
+    in-out property <string> cloud-tags;
+    in-out property <[PlaylistCommentRow]> comments;
+    in-out property <bool> comments-loading: false;
+    in-out property <string> comments-error;
+    callback retry-comments();
+    callback toggle-comment-like(int /*index*/, int /*comment_id*/, bool /*next*/);
+    // The whole thread, over this preview. Lit only where the preview has rows.
+    callback open-comments();
+
+    // What the band's search box means while this detail is open; drag-reorder is disabled while
+    // one is active. Cleared on a fresh open, preserved across a library-changed refresh so a
+    // typed needle survives a scan finishing.
+    in-out property <string> filter;
+
+    // Hydrated from `views.json` under `playlist_detail`.
+    in-out property <TrackColumns> track-columns;
+
+    in-out property <string> sort-field: "position";
+    in-out property <string> sort-dir: "asc";
+
+    in-out property <[int]> selected-ids;
+    in-out property <int> selection-anchor: -1;
+
+    // The `AlbumDetail` dual-slot contract, so switching playlists never flashes.
+    in-out property <image> cover;
+    in-out property <image> blur-img-a;
+    in-out property <image> blur-img-b;
+    in-out property <bool>  blur-use-a;
+    in-out property <bool>  has-blur;
+
+    // -1 when idle, else a 0-based track index and a `0..=length` insertion slot — the
+    // `Queue.drag-source` / `drop-slot` semantics.
+    in-out property <int> drag-source: -1;
+    in-out property <int> drop-slot: -1;
+
+    // Mirrored from Rust on an OS file-hover so the detail can paint its drop banner. Set **only**
+    // when the queue sheet is closed and this detail is open, the queue taking priority.
+    in property <bool> is-drop-hovered: false;
+
+    callback close-detail();
+    callback shuffle-all();
+    // The list in its own order, from the first row.
+    callback play-all();
+    // Toggles the transport when one of these rows is the current track, and otherwise starts the
+    // list the way `play-mode` says.
+    callback toggle-playback();
+    // One decision drives the label, enabled state and Rust click handler. Pending headers from
+    // an asynchronous open must not reuse the previous playlist's transport or rows.
+    pure callback resolve-playback-action(PlayerVm, [TrackListRow], bool, bool) -> PlaylistPlaybackAction;
+    out property <PlaylistPlaybackAction> playback-action: root.resolve-playback-action(
+        Player.vm, root.tracks, root.cloud-collection, root.playlist-id >= 0 && !root.loading);
+    // `"ordered"` or `"shuffle"` — which pill the row highlights, and how `toggle-playback` fills
+    // the queue when it has to start one. Rust writes it on Play All / Shuffle All.
+    in-out property <string> play-mode: "ordered";
+    callback play-row(int /*track_id*/, int /*index*/);
+    // Cloud rows carry exact 64-bit NetEase IDs as decimal strings.
+    callback play-cloud-row(string /*song_id*/, int /*index*/);
+    callback play-next([int] /*track_ids*/);
+    callback add-to-queue([int]);
+    callback toggle-row-favorite([int] /*track_ids*/, bool /*new*/);
+    callback select-row(int /*idx*/, int /*id*/, bool /*shift*/, bool /*ctrl*/);
+    callback select-all();
+    callback clear-selection();
+    callback request-sort(string /*field*/);
+    callback toggle-column(string /*column_id*/);
+    // Cross-tab navigation from a row's right-click "Go to …" entry.
+    callback go-to-album(int /*album_id*/);
+    callback go-to-artist(int /*artist_id*/);
+    callback go-to-genre(int /*genre_id*/);
+
+    // Fires on pointer-up only once the drag passed the click threshold *and* the sort
+    // is still `"position"`, ascending.
+    callback reorder(int /*from*/, int /*to*/);
+
+    // The one action needing a Rust hop before its dialog mounts, the mosaic picker having to query
+    // the playlist's track artworks first. The handler writes `Dialog` through
+    // `upgrade_in_event_loop`, landing on a fresh tick and so dodging the recursion guard.
+    callback request-edit-artwork();
+
+    // The row context menu passes either the right-clicked row or the whole selection.
+    callback remove-track([int] /*track_ids*/);
+    // Cloud rows carry 64-bit song ids, so their removal crosses as decimal text.
+    callback remove-cloud-track(string /*song_id*/);
+    // The right-clicked row's explicit move, `delta` being -1 (up) or 1 (down). Rust refuses it
+    // unless the rows on screen are the playlist's own order.
+    callback move-cloud-track(string /*song_id*/, int /*delta*/);
+    callback toggle-cloud-subscribe();
+
+    // The Sync-with-local review, a page-local panel rather than a `Dialog` kind: it overlays the
+    // track list, and what it reports is this playlist's diff rather than one of the app's
+    // confirmations. Apply writes the plan shown here and nothing else.
+    in-out property <bool> sync-open: false;
+    in-out property <bool> sync-loading: false;
+    in-out property <bool> sync-applying: false;
+    in-out property <string> sync-error;
+    // "local" | "cloud" — the two tokens `ui::playlists::callbacks::sync` spells.
+    in-out property <string> sync-policy: "local";
+    in-out property <bool> sync-can-apply: false;
+    in-out property <bool> sync-no-changes: false;
+    in-out property <bool> sync-creates-playlist: false;
+    // Cloud songs with a local counterpart, after dedupe. Unmatched cloud songs are separate.
+    in-out property <int> sync-cloud-tracks: 0;
+    in-out property <int> sync-added: 0;
+    in-out property <int> sync-removed: 0;
+    in-out property <int> sync-unmatched: 0;
+    in-out property <string> sync-rename-to;
+    in-out property <[SyncConflictRow]> sync-conflicts;
+    callback request-sync-review();
+    callback set-sync-policy(string /*"local" | "cloud"*/);
+    callback apply-sync();
+    callback close-sync();
+
+    // Rust re-walks the cached tracks through the new needle in memory, no DB round-trip.
+    callback filter-changed(string);
+}

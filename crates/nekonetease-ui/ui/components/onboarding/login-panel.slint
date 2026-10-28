@@ -1,0 +1,86 @@
+import { CloudAccount } from "../../settings.slint";
+import { Theme } from "../../theme.slint";
+import { OnboardingPanelHeader } from "onboarding-panel-header.slint";
+import { SectionButton } from "../settings/section-button.slint";
+
+// The first welcome panel brings the NetEase QR code forward instead of asking for a music folder.
+export component OnboardingLoginPanel inherits VerticalLayout {
+    min-width: 0px;
+    spacing: Theme.pad-sm;
+
+    OnboardingPanelHeader {
+        title: @tr("Sign in to NetEase Music");
+        summary: @tr("Connect an account to use personal recommendations, collections and playback permissions");
+    }
+
+    if CloudAccount.logged-in: VerticalLayout {
+        alignment: center;
+        spacing: Theme.pad-sm;
+        Text {
+            text: CloudAccount.account-name;
+            color: Theme.subtext0;
+            font-size: Theme.font-size-sm;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+
+    if !CloudAccount.logged-in: VerticalLayout {
+        alignment: center;
+        spacing: Theme.pad-md;
+        padding-top: Theme.pad-sm;
+
+        HorizontalLayout {
+            alignment: center;
+            if CloudAccount.qr-image.width > 0: Image {
+                source: CloudAccount.qr-image;
+                width: 220px;
+                height: 220px;
+                image-fit: contain;
+            }
+            if CloudAccount.qr-image.width == 0: Image {
+                source: @image-url("../../assets/icons/lucide/qr-code.svg");
+                width: 72px;
+                height: 72px;
+                image-fit: contain;
+                colorize: Theme.subtext0;
+            }
+        }
+
+        Text {
+            text: root.qr-status-label();
+            color: CloudAccount.qr-status == 6 ? Theme.danger : Theme.subtext0;
+            font-size: Theme.font-size-sm;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        if CloudAccount.notice != "": Text {
+            text: CloudAccount.notice;
+            color: Theme.danger;
+            font-size: Theme.font-size-sm;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            SectionButton {
+                label: @tr("Refresh code");
+                leading-icon-image: @image-url("../../assets/icons/lucide/refresh-cw.svg");
+                button-enabled: !CloudAccount.qr-busy;
+                clicked => { CloudAccount.start-qr-login(); }
+            }
+        }
+    }
+
+    pure function qr-status-label() -> string {
+        if CloudAccount.qr-status == 1 { return @tr("Generating QR code…"); }
+        if CloudAccount.qr-status == 2 { return @tr("Scan this code with the NetEase Music app."); }
+        if CloudAccount.qr-status == 3 { return @tr("Scanned. Confirm login on your phone."); }
+        if CloudAccount.qr-status == 4 { return @tr("QR code expired. Refresh to try again."); }
+        if CloudAccount.qr-status == 5 { return @tr("Login successful."); }
+        if CloudAccount.qr-status == 6 { return @tr("Could not start QR login."); }
+        return @tr("Generating QR code…");
+    }
+}

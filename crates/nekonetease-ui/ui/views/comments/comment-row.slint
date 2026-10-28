@@ -1,0 +1,111 @@
+import { Theme } from "../../theme.slint";
+import { CommentRow, Comments } from "../../globals/comments.slint";
+import { ArtworkImage } from "../../components/artwork-image.slint";
+import { PillButton } from "../../components/action-pill.slint";
+
+// One row of a thread, top-level or a reply.
+//
+// A reply indents rather than gaining its own floor controls: the floor is two levels deep at
+// most, and a reply to a reply is posted against the same parent.
+export component CommentRowView inherits Rectangle {
+    in property <CommentRow> comment;
+    in property <bool> is-reply: false;
+
+    callback toggle-like();
+    callback reply();
+    callback show-replies();
+    callback remove();
+
+    height: body.preferred-height;
+    background: transparent;
+
+    body := VerticalLayout {
+        padding-left: root.is-reply ? Theme.pad-lg : Theme.pad-md;
+        padding-right: Theme.pad-md;
+        // Untouched: this is the row spacing the thread has always had. The composer was the
+        // only thing that was too large.
+        padding-top: Theme.pad-sm;
+        padding-bottom: Theme.pad-sm;
+        spacing: Theme.pad-xs;
+
+        HorizontalLayout {
+            spacing: Theme.pad-sm;
+            alignment: start;
+
+            // Square fill inside a round clip, `ArtworkImage`'s idiom: drawing the fill on the
+            // rounded root would stack two antialiased curves and harden the edge.
+            ArtworkImage {
+                width: 28px;
+                height: 28px;
+                tile-size: 28px;
+                tile-radius: 14px;
+                tile-bg: Theme.surface1;
+                tile-icon-color: Theme.overlay1;
+                fallback-icon: "person";
+                artwork-path: root.comment.avatar-url;
+                has-cover: root.comment.avatar-url != "";
+                cover: Comments.request-cover(
+                    root.comment.avatar-url, Comments.remote-covers-generation,
+                );
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 1px;
+
+                Text {
+                    text: root.comment.author;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.comment.display-time;
+                    color: Theme.overlay1;
+                    font-size: Theme.font-size-sm;
+                    overflow: elide;
+                }
+            }
+        }
+
+        Text {
+            text: root.comment.content;
+            color: Theme.text;
+            font-size: Theme.font-size-md;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: Theme.pad-xs;
+            alignment: start;
+
+            PillButton {
+                text: root.comment.liked-count > 0 ? "\{root.comment.liked-count}" : "";
+                icon: "thumb_up";
+                icon-filled: root.comment.liked;
+                active: root.comment.liked;
+                clicked => { root.toggle-like(); }
+            }
+
+            if root.comment.reply-count > 0: PillButton {
+                text: "\{root.comment.reply-count}";
+                icon: "chat";
+                clicked => { root.show-replies(); }
+            }
+
+            if !root.is-reply: PillButton {
+                text: @tr("Reply");
+                clicked => { root.reply(); }
+            }
+
+            if root.comment.owned: PillButton {
+                text: @tr("Delete");
+                icon: "delete";
+                danger: true;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}

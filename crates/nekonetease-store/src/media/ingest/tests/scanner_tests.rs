@@ -1,0 +1,346 @@
+use std::collections::HashMap;
+use std::fs;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use tempfile::TempDir;
+
+use super::*;
+use nekonetease_artwork::media::image::artwork::CoverCache;
+use nekonetease_core::entities::artist::ArtistCredit;
+use nekonetease_core::entities::scan::ExistingTrackSummary;
+use nekonetease_core::error::AppError;
+use nekonetease_core::utils::audio_ext::AUDIO_EXTENSIONS;
+
+fn create_test_files(dir: &Path, names: &[&str]) -> Result<(), AppError> {
+    for name in names {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, b"fake audio")?;
+    }
+    Ok(())
+}
+
+/// Walks `dir` with nothing able to stop it, so a `None` is a defect rather than a cancel.
+fn walk(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
+    collect_media_files(dir, &Unobserved)
+        .map(|walk| walk.files)
+        .ok_or_else(|| AppError::Validation("a walk nothing cancelled came back stopped".into()))
+}
+
+#[test]
+fn collects_audio_files() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    create_test_files(
+        tmp.path(),
+        &["song.mp3", "track.flac", "audio.m4a", "clip.aac", "voice.ogg", "pcm.wav"],
+    )?;
+    let files = walk(tmp.path())?;
+    assert_eq!(files.len(), 6);
+    Ok(())
+}
+
+#[test]
+fn ignores_non_audio_files() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    create_test_files(tmp.path(), &["song.mp3", "readme.txt", "cover.jpg", "doc.pdf"])?;
+    let files = walk(tmp.path())?;
+    assert_eq!(files.len(), 1);
+    assert!(files[0].to_string_lossy().ends_with("song.mp3"));
+    Ok(())
+}
+
+#[test]
+fn handles_empty_directory() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let files = walk(tmp.path())?;
+    assert_eq!(files.len(), 0);
+    Ok(())
+}
+
+#[test]
+fn follows_nested_directories() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    create_test_files(tmp.path(), &["a/b/deep.flac", "top.mp3", "sub/track.ogg"])?;
+    let files = walk(tmp.path())?;
+    assert_eq!(files.len(), 3);
+    Ok(())
+}
+
+#[test]
+fn collects_all_supported_extensions() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let audio_files: Vec<String> =
+        AUDIO_EXTENSIONS.iter().map(|ext| format!("file.{ext}")).collect();
+    let names: Vec<&str> = audio_files.iter().map(std::string::String::as_str).collect();
+    create_test_files(tmp.path(), &names)?;
+    let files = walk(tmp.path())?;
+    assert_eq!(files.len(), AUDIO_EXTENSIONS.len());
+    Ok(())
+}
+
+/// The extension match is case-folded, so a library ripped on a system that
+/// wrote `.FLAC` is collected, and a `.JPG` cover is still not.
+#[test]
+fn extension_match_is_case_insensitive() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    create_test_files(
+        tmp.path(),
+        &["Track.FLAC", "Song.Mp3", "clip.AAC", "cover.JPG", "notes.TXT"],
+    )?;
+    let mut names: Vec<String> = walk(tmp.path())?
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str().map(str::to_owned))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Song.Mp3", "Track.FLAC", "clip.AAC"]);
+    Ok(())
+}
+
+// ── scan_files_parallel ──
+
+/// Creates a minimal valid WAV file for scanner tests.
+fn create_minimal_wav(path: &std::path::Path) -> Result<(), AppError> {
+    let sample_rate: u32 = 44_100;
+    let data_size: u32 = 4;
+    let byte_rate = sample_rate * 2; // mono 16-bit
+    let file_size = 36 + data_size;
+
+    let mut buf = Vec::with_capacity(48);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&file_size.to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&sample_rate.to_le_bytes());
+    buf.extend_from_slice(&byte_rate.to_le_bytes());
+    buf.extend_from_slice(&2u16.to_le_bytes()); // block align
+    buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_size.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 4]);
+
+    fs::write(path, &buf)?;
+    Ok(())
+}
+
+fn test_cover_cache() -> CoverCache {
+    nekonetease_artwork::media::image::artwork::new_cover_cache()
+}
+
+#[test]
+fn scan_files_parallel_empty_returns_empty() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let artwork_dir = tmp.path().join("artwork");
+    fs::create_dir(&artwork_dir)?;
+
+    let result = scan_files_parallel(&[], &artwork_dir, &test_cover_cache(), &Unobserved);
+    assert_eq!(result.len(), 0);
+    Ok(())
+}
+
+/// A file nothing can parse still reaches the library, titled from its filename. The
+/// formats with no tag reader at all (Matroska, CAF) arrive the same way, and a scan
+/// that dropped them would leave a file sitting in a watched folder that the library
+/// never mentions.
+#[test]
+fn scan_files_parallel_keeps_a_filename_row_for_unparseable_tags() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let artwork_dir = tmp.path().join("artwork");
+    fs::create_dir(&artwork_dir)?;
+
+    let bad_file = tmp.path().join("bad.mp3");
+    fs::write(&bad_file, b"not valid audio")?;
+
+    let files = vec![bad_file];
+    let result = scan_files_parallel(&files, &artwork_dir, &test_cover_cache(), &Unobserved);
+
+    let [scanned] = result.as_slice() else {
+        return Err(AppError::Validation("the unparseable file produced no row".into()));
+    };
+    assert_eq!(scanned.metadata.title, "bad");
+    assert_eq!(scanned.metadata.duration_ms, 0);
+    assert_eq!(scanned.metadata.codec, None);
+    assert_eq!(scanned.metadata.artist, ArtistCredit::default());
+    Ok(())
+}
+
+/// The hash above the parse is what makes the fallback safe, so a file that can't be
+/// read at all must still drop rather than arrive as an empty row.
+#[test]
+fn scan_files_parallel_drops_files_it_cannot_read() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let artwork_dir = tmp.path().join("artwork");
+    fs::create_dir(&artwork_dir)?;
+
+    let files = vec![tmp.path().join("gone.mp3")];
+    let result = scan_files_parallel(&files, &artwork_dir, &test_cover_cache(), &Unobserved);
+    assert_eq!(result.len(), 0);
+    Ok(())
+}
+
+/// Counts the parse's progress reports.
+struct ReadCounter(AtomicU32);
+
+impl ScanObserver for ReadCounter {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn read(&self, _done: u32, _file_name: &str) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn scan_files_parallel_reports_progress_to_its_observer() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let artwork_dir = tmp.path().join("artwork");
+    fs::create_dir(&artwork_dir)?;
+
+    // Create 10 valid WAV files to trigger a progress report (fires every 10)
+    let mut files = Vec::new();
+    for i in 0..10 {
+        let path = tmp.path().join(format!("track_{i}.wav"));
+        create_minimal_wav(&path)?;
+        files.push(path);
+    }
+
+    let counter = ReadCounter(AtomicU32::new(0));
+    scan_files_parallel(&files, &artwork_dir, &test_cover_cache(), &counter);
+
+    // With 10 files, a report fires at file 10 (every 10 files)
+    assert!(counter.0.load(Ordering::Relaxed) >= 1);
+    Ok(())
+}
+
+/// Stopped before it starts.
+struct Cancelled;
+
+impl ScanObserver for Cancelled {
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+}
+
+/// A partial list read as the whole tree would purge every row the walk hadn't reached.
+#[test]
+fn a_cancelled_walk_answers_none_rather_than_a_partial_list() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    create_test_files(tmp.path(), &["a.mp3", "b.flac"])?;
+
+    assert!(collect_media_files(tmp.path(), &Cancelled).is_none());
+    Ok(())
+}
+
+/// The running counts the walk reports, in order.
+#[derive(Default)]
+struct FoundLog(std::sync::Mutex<Vec<u32>>);
+
+impl ScanObserver for FoundLog {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn found(&self, count: u32) {
+        // Poisoned only by a panic that has already failed the test.
+        if let Ok(mut counts) = self.0.lock() {
+            counts.push(count);
+        }
+    }
+}
+
+#[test]
+fn the_walk_counts_the_audio_files_it_finds_and_nothing_else() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    create_test_files(tmp.path(), &["a.mp3", "cover.jpg", "b.flac", "notes.txt", "c.ogg"])?;
+    let log = FoundLog::default();
+
+    collect_media_files(tmp.path(), &log);
+
+    let counts = log.0.into_inner().map_err(|_| AppError::Validation("log poisoned".into()))?;
+    assert_eq!(counts, [1, 2, 3]);
+    Ok(())
+}
+
+/// A file a cancelled parse still read would be written by the chunk the cancel cut short, so
+/// stopping costs more than the one transaction it promises.
+#[test]
+fn a_cancelled_parse_reads_nothing() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let artwork_dir = tmp.path().join("artwork");
+    fs::create_dir(&artwork_dir)?;
+    // Unparseable, so each would otherwise come back as a filename row.
+    let file = tmp.path().join("unread.mp3");
+    fs::write(&file, b"not valid audio")?;
+
+    let result = scan_files_parallel(&[file], &artwork_dir, &test_cover_cache(), &Cancelled);
+
+    assert_eq!(result.len(), 0);
+    Ok(())
+}
+
+// ── track_is_current (incremental-scan filter) ──
+
+/// Build an `ExistingTrackSummary` map with one entry whose size + mtime
+/// match `path` on disk.
+fn existing_for(path: &Path) -> Result<HashMap<String, ExistingTrackSummary>, AppError> {
+    let meta = std::fs::metadata(path)?;
+    let size = i64::try_from(meta.len()).unwrap_or(i64::MAX);
+    let mtime = crate::media::ingest::metadata::date_modified_from_metadata(&meta);
+    let mut map = HashMap::new();
+    map.insert(
+        path.to_string_lossy().into_owned(),
+        ExistingTrackSummary { file_size: Some(size), date_modified: mtime },
+    );
+    Ok(map)
+}
+
+#[test]
+fn track_is_current_false_when_no_row() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let f = tmp.path().join("a.wav");
+    create_minimal_wav(&f)?;
+    assert!(!track_is_current(&f, &HashMap::new()));
+    Ok(())
+}
+
+#[test]
+fn track_is_current_true_when_size_and_mtime_match() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let f = tmp.path().join("a.wav");
+    create_minimal_wav(&f)?;
+    assert!(track_is_current(&f, &existing_for(&f)?));
+    Ok(())
+}
+
+#[test]
+fn track_is_current_false_when_size_differs() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let f = tmp.path().join("a.wav");
+    create_minimal_wav(&f)?;
+    let mut existing = existing_for(&f)?;
+    // Simulate a content edit: stored size no longer matches the file.
+    if let Some(row) = existing.get_mut(&f.to_string_lossy().into_owned()) {
+        row.file_size = row.file_size.map(|s| s + 1);
+    }
+    assert!(!track_is_current(&f, &existing));
+    Ok(())
+}
+
+#[test]
+fn track_is_current_false_when_mtime_differs() -> Result<(), AppError> {
+    let tmp = TempDir::new()?;
+    let f = tmp.path().join("a.wav");
+    create_minimal_wav(&f)?;
+    let mut existing = existing_for(&f)?;
+    // Stored mtime no longer matches — e.g. tags were rewritten in place.
+    if let Some(row) = existing.get_mut(&f.to_string_lossy().into_owned()) {
+        row.date_modified = Some("1999-01-01T00:00:00Z".to_owned());
+    }
+    assert!(!track_is_current(&f, &existing));
+    Ok(())
+}

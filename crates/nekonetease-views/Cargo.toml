@@ -1,0 +1,56 @@
+[package]
+name = "nekonetease-views"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Not decoration: `ui::callbacks::updater` and `ui::settings::updater_settings` read
+# `CARGO_PKG_VERSION` for the compare and the label. A member inheriting neither
+# ships an empty link and a version of "0.0.0", and only *logs* about the first.
+repository.workspace = true
+description = "The Slint bridge: every view slice's wiring, the shared component library and the callbacks over both"
+publish = false
+
+[lib]
+doctest = false
+
+# The top of the graph and the whole point of it. **Neither `nekonetease-store` nor
+# `nekonetease-net`**: the UI reaches the database through `nekonetease-app`'s library API and
+# nowhere else, and it opens no socket at all. Both used to be one `use` away; now they
+# are absent from this table, so rustc is what says no rather than a grep.
+[dependencies]
+nekonetease-core = { path = "../nekonetease-core" }
+nekonetease-artwork = { path = "../nekonetease-artwork" }
+nekonetease-platform = { path = "../nekonetease-platform" }
+nekonetease-playback = { path = "../nekonetease-playback" }
+nekonetease-engine = { path = "../nekonetease-engine" }
+nekonetease-app = { path = "../nekonetease-app" }
+nekonetease-video = { path = "../nekonetease-video" }
+nekonetease-ui = { path = "../nekonetease-ui" }
+
+slint.workspace = true
+qrcode = { workspace = true, features = ["svg"] }
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+async-compat.workspace = true
+parking_lot.workspace = true
+# Shuffle-all picks its starting row here.
+rand.workspace = true
+image.workspace = true
+lru.workspace = true
+material-colors.workspace = true
+chrono.workspace = true
+log.workspace = true
+# Reached only through `ui::file_dialog::parented`, which is the sole place it may be named.
+rfd.workspace = true
+# `ui::launcher`, and `open::that_detached` rather than `that`.
+open.workspace = true
+
+[dev-dependencies]
+nekonetease-testkit = { path = "../nekonetease-testkit" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

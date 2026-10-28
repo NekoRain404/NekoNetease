@@ -1,0 +1,428 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Search } from "../globals/search.slint";
+import { CloudTrackActions } from "../globals/cloud-track-actions.slint";
+import { Playlists } from "../globals/playlists.slint";
+import { SearchBar } from "../components/search-bar.slint";
+import { FilterThrottle } from "../components/filter-throttle.slint";
+import { ArtworkImage } from "../components/artwork-image.slint";
+import { ActionPill, PillButton } from "../components/action-pill.slint";
+import { HorizontalCardStrip } from "../components/grid/horizontal-card-strip.slint";
+import { OverlayScrollbar } from "../components/overlay-scrollbar.slint";
+import { RecentSearches } from "search/recent-searches.slint";
+import { SearchDiscoverSection } from "search/discover-section.slint";
+import { ChartsSection } from "search/charts-section.slint";
+import { NoResults } from "search/no-results.slint";
+import { TopResultCard } from "search/top-result-card.slint";
+import { SongsSection } from "search/songs-section.slint";
+import { SuggestionsPopup } from "search/suggestions-popup.slint";
+
+component CloudSearchEntityResult inherits Rectangle {
+    in property <string> remote-id;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> artwork-path;
+    in property <string> fallback-icon;
+    in property <image> cover;
+    callback open(string /*exact NetEase ID*/);
+
+    width: 100%;
+    height: 76px;
+    border-radius: Theme.radius-md;
+    background: row-touch.has-hover ? Theme.surface0 : transparent;
+    animate background { duration: Theme.dur-fast; easing: ease-in-out; }
+
+    VerticalLayout {
+        padding: Theme.pad-sm;
+        alignment: center;
+        HorizontalLayout {
+            spacing: Theme.pad-md;
+            ArtworkImage {
+                artwork-path: root.artwork-path;
+                cover: root.cover;
+                tile-size: 56px;
+                tile-radius: Theme.radius-sm;
+                fallback-icon: root.fallback-icon;
+            }
+            VerticalLayout {
+                vertical-stretch: 1;
+                alignment: center;
+                spacing: Theme.pad-xs;
+                Text {
+                    text: "‎" + root.title;
+                    color: Theme.text;
+                    font-size: Theme.font-size-md;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                if root.subtitle != "": Text {
+                    text: root.subtitle;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    row-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(root.remote-id); }
+    }
+}
+
+// One full-height scroll container holding every state branch, with an autofocused `SearchBar`
+// floating over it and no page title. **A mount sheet**: this file owns the timers, branch
+// conditions and scroll chromes, `views/search/*.slint` own the bodies. Each section reads `Search`
+// directly and takes no inputs, so a branch here is one line.
+//
+// **The bar is out of the flow, not a band** — heading a row inside the view's column clips the
+// scroller at that row's floor, cutting off the first card behind a strip of `Theme.base`.
+// Floating, it costs only the inset the body reserves, and with no `TouchArea` of its own
+// everything beside the pill stays clickable.
+//
+// Search results come from NetEase's song endpoint; recent queries remain local to the app.
+export component SearchView inherits Rectangle {
+    // A suggestion exchange in flight or on screen. Either way the pause that would commit the
+    // query is still producing rows, and committing would unmount them under the user's finger.
+    private property <bool> suggestion-live:
+        Search.suggestions-pending
+        || (Search.suggestions.length > 0 && Search.query == Search.suggestions-query);
+
+    // The `edited` bump; this Timer commits after the keystrokes go quiet and writes
+    // `applied` to halt itself — the Tracks / Favorites throttle shape.
+    debounce := Timer {
+        interval: 300ms;
+        running: Search.debounce-tick-pending != Search.debounce-tick-applied;
+        triggered() => {
+            // Re-arm rather than commit: the popup settles this within a click or a pick.
+            if root.suggestion-live {
+                Search.debounce-tick-pending += 1;
+            } else {
+                Search.debounce-tick-applied = Search.debounce-tick-pending;
+                Search.commit-search(Search.query);
+            }
+        }
+    }
+
+    // Settles rather than firing on a cadence: the answer costs a network round trip, so the
+    // values on the way to it are requests nobody asked for. Shorter than the commit's, so the
+    // rows have a chance to land while the box still differs from the committed query.
+    FilterThrottle {
+        pending: Search.suggest-tick-pending;
+        trailing: true;
+        interval: 150ms;
+        // The component's own `applied` resets with the view, so a re-entry whose query survived
+        // the leave would otherwise spend a request nobody typed for.
+        fire() => {
+            if Search.query != Search.committed-query {
+                Search.request-suggestions(Search.query);
+            }
+        }
+    }
+
+    // The view is rebuilt on every entry, so this re-fires each time. **A Timer, not
+    // `init`**, which keeps the `focus()` call out of binding evaluation.
+    autofocus := Timer {
+        interval: 1ms;
+        running: true;
+        triggered() => {
+            self.running = false;
+            search-bar.focus-input();
+        }
+    }
+
+    // Catches any click no inner TouchArea consumes: dismisses the suggestion popup and bumps the
+    // blur tick.
+    TouchArea {
+        clicked => {
+            Search.dismiss-suggestions();
+            Search.blur-search-tick += 1;
+        }
+    }
+
+    // What the scroll body insets its content by, and the height of the floating row:
+    // the bar's own 32 px with `pad-md` of clearance above and below. Nothing starts
+    // underneath the pill, and everything scrolls behind it from there.
+    private property <length> bar-inset: 56px;
+
+    body := Rectangle {
+        width: 100%;
+        height: 100%;
+        clip: true;
+
+        below-sv := ScrollView {
+            width: 100%;
+            height: 100%;
+            horizontal-scrollbar-policy: always-off;
+            vertical-scrollbar-policy:   always-off;
+            viewport-width: self.width;
+
+            VerticalLayout {
+                padding-top: root.bar-inset;
+                padding-left: Theme.pad-lg;
+                padding-right: Theme.pad-lg;
+                padding-bottom: Theme.pad-lg;
+                spacing: Theme.pad-lg;
+
+                // The chips wrap against the column's content width, which the layout fixes
+                // independently of them, so handing it over is a derivation rather than a
+                // cycle — and a plain binding, so the strip owes no width mirror.
+                if Search.query == "" && Search.recent-rows.length > 0: RecentSearches {
+                    avail-width: root.width - 2 * Theme.pad-lg;
+                }
+
+                // The three discovery feeds are one request, so one line states that all of
+                // them are still on their way; the sections paint as each answer lands.
+                if Search.query == "" && Search.discovery-loading: HorizontalLayout {
+                    vertical-stretch: 0;
+                    alignment: center;
+                    Text {
+                        text: @tr("Loading…");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-md;
+                    }
+                }
+
+                // Each feed self-gates on its model, and mounts on its failure too, so an empty
+                // model is a retry prompt rather than a blank page.
+                if Search.query == ""
+                    && (Search.hot-searches.length > 0
+                        || Search.discovery-rows.length > 0
+                        || Search.hot-searches-failed
+                        || Search.discovery-failed): SearchDiscoverSection {
+                    avail-width: root.width - 2 * Theme.pad-lg;
+                }
+
+                // The catalogue is its own section: it is the whole directory, where the strip
+                // above is a capped invitation.
+                if Search.query == ""
+                    && (Search.chart-rows.length > 0 || Search.charts-failed): ChartsSection {
+                    avail-width: root.width - 2 * Theme.pad-lg;
+                }
+
+                if Search.query != "": HorizontalLayout {
+                    vertical-stretch: 0;
+                    alignment: center;
+                    ActionPill {
+                        PillButton {
+                            text: @tr("Songs");
+                            active: Search.search-kind == "songs";
+                            clicked => {
+                                Search.search-kind = "songs";
+                                Search.page-index = 0;
+                                Search.search-kind-changed("songs");
+                            }
+                        }
+                        PillButton {
+                            text: @tr("Albums");
+                            active: Search.search-kind == "albums";
+                            clicked => {
+                                Search.search-kind = "albums";
+                                Search.page-index = 0;
+                                Search.search-kind-changed("albums");
+                            }
+                        }
+                        PillButton {
+                            text: @tr("Artists");
+                            active: Search.search-kind == "artists";
+                            clicked => {
+                                Search.search-kind = "artists";
+                                Search.page-index = 0;
+                                Search.search-kind-changed("artists");
+                            }
+                        }
+                        PillButton {
+                            text: @tr("Playlists");
+                            active: Search.search-kind == "playlists";
+                            clicked => {
+                                Search.search-kind = "playlists";
+                                Search.page-index = 0;
+                                Search.search-kind-changed("playlists");
+                            }
+                        }
+                    }
+                }
+
+                if Search.loading && Search.query != "": HorizontalLayout {
+                    vertical-stretch: 0;
+                    alignment: center;
+                    padding-top: Theme.pad-lg;
+                    Text {
+                        text: @tr("Searching…");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-md;
+                    }
+                }
+
+                if Search.search-error != "" && Search.query != "": HorizontalLayout {
+                    vertical-stretch: 0;
+                    spacing: Theme.pad-md;
+                    alignment: center;
+                    Text {
+                        text: Search.search-error;
+                        color: Theme.subtext0;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    ActionPill {
+                        PillButton {
+                            icon: "refresh";
+                            text: @tr("Retry");
+                            enabled: !Search.loading;
+                            clicked => { Search.retry-search(); }
+                        }
+                    }
+                }
+
+                if !Search.loading && Search.query != ""
+                    && Search.search-error == ""
+                    && Search.tracks.length == 0
+                    && Search.entity-results.length == 0
+                    && Search.top-kind == "": NoResults { }
+
+                // The Top Result subtree unmounts entirely with no top result, so the
+                // Songs column claims the full width naturally.
+                if Search.search-kind == "songs"
+                    && (Search.top-kind != "" || Search.tracks.length > 0): HorizontalLayout {
+                    vertical-stretch: 0;
+                    spacing: Theme.pad-lg;
+                    alignment: stretch;
+
+                    if Search.top-kind != "": TopResultCard { }
+
+                    SongsSection { }
+                }
+
+                if Search.search-kind != "songs"
+                    && (Search.top-kind != "" || Search.entity-results.length > 0): HorizontalLayout {
+                    vertical-stretch: 0;
+                    spacing: Theme.pad-lg;
+                    alignment: stretch;
+
+                    if Search.top-kind != "": TopResultCard { }
+
+                    if Search.entity-results.length > 0: VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: Theme.pad-xs;
+                        for result in Search.entity-results: CloudSearchEntityResult {
+                            remote-id: result.remote_id;
+                            title: result.title;
+                            subtitle: result.subtitle;
+                            artwork-path: result.artwork_path;
+                            cover: Search.request-entity-cover(result.artwork_path, Search.entity-covers-generation);
+                            fallback-icon: Search.search-kind == "artists"
+                                ? "person"
+                                : (Search.search-kind == "playlists" ? "playlist" : "album");
+                            open(id) => {
+                                Search.blur-search-tick += 1;
+                                if (Search.search-kind == "albums") {
+                                    CloudTrackActions.open-album(id);
+                                } else if (Search.search-kind == "artists") {
+                                    CloudTrackActions.open-artist(id);
+                                } else if (Search.search-kind == "playlists") {
+                                    Playlists.open-playlist(id);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if Search.query != "" && Search.search-error == ""
+                    && Search.results-summary != "": HorizontalLayout {
+                    vertical-stretch: 0;
+                    alignment: center;
+                    Text {
+                        text: Search.results-summary;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    if Search.has-previous-page || Search.has-next-page: ActionPill {
+                        if Search.has-previous-page: PillButton {
+                            icon: "chevron_left";
+                            text: @tr("Previous");
+                            clicked => { Search.request-page(-1); }
+                        }
+                        if Search.has-next-page: PillButton {
+                            text: @tr("Next");
+                            icon: "chevron_right";
+                            clicked => { Search.request-page(1); }
+                        }
+                    }
+                }
+
+                // **Collects the surplus.** A column whose children are all
+                // `vertical-stretch: 0` divides spare height equally among them, which on
+                // the empty-query state — where only the Recent section is mounted —
+                // pushed its heading to the top and its chips to the bottom with a
+                // yawning gap between.
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+
+    // Covers the whole view, since the results now run its full height.
+    OverlayScrollbar {
+        horizontal: false;
+        x: parent.width - self.width;
+        y: 0;
+        width: Theme.scrollbar-slot;
+        height: parent.height;
+        visible-size: below-sv.visible-height;
+        content-size: below-sv.viewport-height;
+        offset: -below-sv.viewport-y;
+        scroll-to(o) => { below-sv.viewport-y = -o; }
+    }
+
+    // Declared last so it paints over both the results and the scrollbar — Slint paints
+    // in declaration order. The height has to be pinned: as a layout child of a plain
+    // Rectangle it would otherwise fill the view and centre the pill down the middle of
+    // it. `pad-lg` on both sides keeps the bar clear of the scrollbar's 10 px track at
+    // any width, since it compresses toward its own `min-w` rather than overrunning.
+    HorizontalLayout {
+        y: 0;
+        height: root.bar-inset;
+        padding-left: Theme.pad-lg;
+        padding-right: Theme.pad-lg;
+        alignment: center;
+
+        VerticalLayout {
+            alignment: center;
+            search-bar := SearchBar {
+                text <=> Search.query;
+                placeholder: @tr("Search");
+                blur-trigger: Search.blur-search-tick;
+                input-width: 420px;
+                edited(t) => {
+                    Search.debounce-tick-pending += 1;
+                    Search.suggest-tick-pending += 1;
+                    Search.query-changed(t);
+                }
+                // Enter commits immediately, and aligning the ticks cancels the pending
+                // fire so the query isn't committed twice. **This is what lets a
+                // preserved query be re-run**: tab-leave released the results and cleared
+                // the models but kept `Search.query`, so no editing is needed — just
+                // focus and Enter.
+                accepted => {
+                    Search.debounce-tick-applied = Search.debounce-tick-pending;
+                    Search.commit-search(Search.query);
+                }
+            }
+        }
+    }
+
+    // Under the floating bar and over the results. The bar's row is out of the flow, and this is
+    // positioned absolutely, so it claims no height from the body below. Declared last, after the
+    // bar and the scrollbar. The width matches the bar's 420 px and compresses with it.
+    if Search.suggestions.length > 0
+        && Search.query != ""
+        && Search.query != Search.committed-query
+        && Search.query == Search.suggestions-query: SuggestionsPopup {
+        x: (root.width - self.width) / 2;
+        y: root.bar-inset - Theme.pad-md + Theme.pad-xs;
+        width: min(420px, root.width - 2 * Theme.pad-lg);
+        rows: Search.suggestions;
+        picked(term) => { Search.suggestion-pick(term); }
+    }
+}

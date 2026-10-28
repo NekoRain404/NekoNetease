@@ -1,0 +1,16 @@
+name: headless audio
+description: Point ALSA's default PCM at the userspace null device so the engine can open a stream on a runner with no sound card.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        mkdir -p "$HOME/.asoundrc.d"
+        cat > "$HOME/.asoundrc" <<'ALSA'
+        pcm.!default {
+            type null
+        }
+        ctl.!default {
+            type null
+        }
+        ALSA

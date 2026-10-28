@@ -1,0 +1,28 @@
+import { Theme } from "../../../theme.slint";
+import { SettingsPage } from "../../../globals/settings-page.slint";
+import { LyricsSection } from "../lyrics-section.slint";
+import { NeteaseAccountSection } from "../netease-account-section.slint";
+
+// The online lyrics settings.
+export component ServicesPage inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    out property <bool> has-matches: lyrics.has-matches || account.has-matches;
+
+    // See `library-page.slint` for why the cards live in columns that place
+    // themselves.
+    GridLayout {
+        spacing: Theme.pad-lg;
+
+        VerticalLayout {
+            row: SettingsPage.grid-row(0); col: SettingsPage.grid-col(0);
+            alignment: start;
+            spacing: Theme.pad-lg;
+
+            account := NeteaseAccountSection { tab-name: @tr("Services"); }
+            lyrics := LyricsSection { tab-name: @tr("Services"); }
+        }
+    }
+}

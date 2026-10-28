@@ -1,0 +1,162 @@
+//! Window-chrome settings wires that don't fit the theme / variant /
+//! accent triad: match-unfocused background tint (KDE-only),
+//! corner-radius chip group, and the overflow-menu button toggles. Each
+//! is independent of the others and of Material You — they share this
+//! file purely as "the smaller appearance-section toggles".
+
+use slint::ComponentHandle;
+
+use nekonetease_app::library;
+use nekonetease_app::services;
+use nekonetease_app::services::settings::{TitlebarButtonSide, TitlebarButtonStyle};
+use nekonetease_app::state::AppState;
+use nekonetease_ui::{AppWindow, MiniPlayer, Settings, Theme};
+
+/// Wire the KDE-only "Match Unfocused Window Background" toggle. The two-way binding
+/// has already flipped the property, and the sidebar and bar bindings read it directly,
+/// so no Rust mirror is needed — only the persist.
+pub(super) fn wire_match_unfocused_bg_changed(ui: &AppWindow, state: &AppState) {
+    let s = state.clone();
+    ui.global::<Settings>().on_match_unfocused_bg_changed(move |on| {
+        s.persist_blocking("persist match_unfocused_to_system_bg", move |paths| {
+            library::settings::set_match_unfocused_to_system_bg(paths, on)
+        });
+    });
+}
+
+/// `px` clamped, then snapped to the nearest chip preset, so the painted radius and the
+/// persisted value can't diverge from the chip group's set. The boot seed and the row share it.
+pub(super) fn corner_radius_preset(px: u32) -> u32 {
+    library::settings::snap_to_preset(px.min(services::settings::MAX_CORNER_RADIUS))
+}
+
+/// Wire the Window Corner Radius row: clamp, apply synchronously so the shell and inner
+/// panel repaint at once, then persist on the blocking pool. No shadow — nothing else
+/// touches `settings.corner_radius` — and no coordinator kick, `Theme.shell-radius`
+/// being written here rather than by a task re-reading the file.
+pub(super) fn wire_corner_radius_changed(ui: &AppWindow, state: &AppState) {
+    let weak = ui.as_weak();
+    let s = state.clone();
+    ui.global::<Settings>().on_corner_radius_changed(move |px_i32| {
+        let Some(ui) = weak.upgrade() else { return };
+        // Defensive — the chip group only emits valid presets — against a later path
+        // forwarding arbitrary px.
+        let radius = corner_radius_preset(u32::try_from(px_i32).unwrap_or(0));
+        // Slint length properties codegen as `f32` logical pixels.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "snapped to {0,6,8,10,15}: exact f32 representation"
+        )]
+        ui.global::<Theme>().set_shell_radius(radius as f32);
+        s.persist_blocking("persist corner_radius", move |paths| {
+            library::settings::set_corner_radius(paths, radius)
+        });
+    });
+}
+
+/// Wire the "Close to Tray" toggle: mirror the value into the process-global atomic
+/// `window_chrome`'s close handlers read — synchronously, so the very next close honours
+/// it — then persist. No coordinator kick; nothing re-reads the file for this field.
+pub(super) fn wire_close_to_tray_changed(ui: &AppWindow, state: &AppState) {
+    let s = state.clone();
+    ui.global::<Settings>().on_close_to_tray_changed(move |on| {
+        crate::ui::shell::tray_bridge::set_close_to_tray(on);
+        s.persist_blocking("persist close_to_tray", move |paths| {
+            library::window::set_close_to_tray(paths, on)
+        });
+    });
+}
+
+/// Wire the Decoration Button Style chip group: write the matching
+/// `Theme.titlebar-button-style` token synchronously so `custom-titlebar.slint` reflows
+/// at once, then persist. No coordinator kick — the titlebar reads `Theme` directly.
+pub(super) fn wire_titlebar_button_style_changed(ui: &AppWindow, state: &AppState) {
+    let weak = ui.as_weak();
+    let s = state.clone();
+    ui.global::<Settings>().on_titlebar_button_style_changed(move |idx| {
+        let Some(ui) = weak.upgrade() else { return };
+        let style = style_for(idx);
+        ui.global::<Theme>().set_titlebar_button_style(idx_for(style));
+        s.persist_blocking("persist titlebar_button_style", move |paths| {
+            library::window::set_titlebar_button_style(paths, style)
+        });
+    });
+}
+
+/// Wire the Miniplayer card's Window Buttons chip group, in `wire_titlebar_button_style_changed`'s
+/// shape, writing `MiniPlayer.button-style` where that one writes the titlebar's token.
+pub(super) fn wire_mini_player_button_style_changed(ui: &AppWindow, state: &AppState) {
+    let weak = ui.as_weak();
+    let s = state.clone();
+    ui.global::<Settings>().on_mini_player_button_style_changed(move |idx| {
+        let Some(ui) = weak.upgrade() else { return };
+        let style = style_for(idx);
+        ui.global::<MiniPlayer>().set_button_style(idx_for(style));
+        s.persist_blocking("persist mini_player_button_style", move |paths| {
+            library::window::set_mini_player_button_style(paths, style)
+        });
+    });
+}
+
+/// Wire the Decoration Button Side chip group, in `wire_titlebar_button_style_changed`'s
+/// shape.
+pub(super) fn wire_titlebar_button_side_changed(ui: &AppWindow, state: &AppState) {
+    let weak = ui.as_weak();
+    let s = state.clone();
+    ui.global::<Settings>().on_titlebar_button_side_changed(move |idx| {
+        let Some(ui) = weak.upgrade() else { return };
+        let side = match idx {
+            1 => TitlebarButtonSide::Left,
+            _ => TitlebarButtonSide::Right,
+        };
+        ui.global::<Theme>().set_titlebar_button_side(idx_for_side(side));
+        s.persist_blocking("persist titlebar_button_side", move |paths| {
+            library::window::set_titlebar_button_side(paths, side)
+        });
+    });
+}
+
+/// The chip index back to a style, the inverse of [`idx_for`], shared by the titlebar's row and the
+/// miniplayer's so the two can't read one chip two ways.
+fn style_for(idx: i32) -> TitlebarButtonStyle {
+    match idx {
+        1 => TitlebarButtonStyle::Macos,
+        2 => TitlebarButtonStyle::Kde,
+        _ => TitlebarButtonStyle::Standard,
+    }
+}
+
+/// Slint stores the titlebar style as an int, so the enum-to-int mapping lives here and
+/// the install and wire paths agree on it.
+pub(super) fn idx_for(style: TitlebarButtonStyle) -> i32 {
+    match style {
+        TitlebarButtonStyle::Standard => 0,
+        TitlebarButtonStyle::Macos => 1,
+        TitlebarButtonStyle::Kde => 2,
+    }
+}
+
+/// [`idx_for`] for the side enum.
+pub(super) fn idx_for_side(side: TitlebarButtonSide) -> i32 {
+    match side {
+        TitlebarButtonSide::Right => 0,
+        TitlebarButtonSide::Left => 1,
+    }
+}
+
+/// Wire the Overflow Menu Buttons row. `OverflowCheckCell` has already flipped the
+/// matching `Settings.overflow-<id>` bool synchronously, so the now-playing bar has
+/// repainted and only the persist is left. No shadow, no coordinator kick.
+pub(super) fn wire_overflow_buttons_changed(ui: &AppWindow, state: &AppState) {
+    let s = state.clone();
+    ui.global::<Settings>().on_overflow_buttons_changed(move |id, on| {
+        let id_str = id.to_string();
+        s.persist_blocking("persist overflow_buttons", move |paths| {
+            library::settings::set_overflow_button(paths, id_str, on)
+        });
+    });
+}
+
+#[cfg(test)]
+#[path = "tests/window_settings_tests.rs"]
+mod tests;

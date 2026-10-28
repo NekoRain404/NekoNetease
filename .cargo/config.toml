@@ -1,0 +1,4 @@
+# The corpus walks and `nekonetease-testkit` resolve repository paths at compile time through
+# `env!("NEKONETEASE_REPO_ROOT")`, so the value must be absolute and end in a separator.
+[env]
+NEKONETEASE_REPO_ROOT = { value = "./", relative = true }

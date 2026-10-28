@@ -1,0 +1,389 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Comments } from "../../globals/comments.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { MultilineInput } from "../../components/multiline-input.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { IconButton } from "../../components/icon-button.slint";
+import { PillButton } from "../../components/action-pill.slint";
+import { CommentRowView } from "comment-row.slint";
+
+// The full thread surface, standalone over a page or embedded under one. The reply floor is a
+// sheet over the thread rather than a second page: it is opened from one row, read, and
+// dismissed, and its rows' reply action hands the target back to the composer below.
+export component CommentsView inherits Rectangle {
+    // `embedded` drops the close button and names the section itself, because a host that
+    // mounted this under its own subject already owns leaving it.
+    in property <bool> embedded: false;
+
+    width: 100%;
+    height: 100%;
+    background: Theme.base;
+
+    // `changed` takes no path expression on a global, and the tick is written by Rust from a
+    // row's Reply callback.
+    private property <int> watched-focus: Comments.composer-focus-tick;
+    changed watched-focus => { composer-input.focus-input(); }
+
+    VerticalLayout {
+        spacing: 0;
+
+        // Header.
+        HorizontalLayout {
+            padding-left: Theme.pad-md;
+            padding-right: Theme.pad-md;
+            padding-top: Theme.pad-md;
+            padding-bottom: Theme.pad-sm;
+            spacing: Theme.pad-sm;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 2px;
+
+                Text {
+                    text: root.embedded ? @tr("Comments") : Comments.title;
+                    color: Theme.text;
+                    font-size: Theme.page-title-size;
+                    font-weight: Theme.page-title-weight;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: Comments.total > 0 ? "\{Comments.total}" : "";
+                    color: Theme.overlay1;
+                    font-size: Theme.font-size-sm;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.pad-xs;
+                alignment: end;
+
+                PillButton {
+                    text: @tr("Hot");
+                    active: Comments.hot;
+                    clicked => { Comments.select-hot(); }
+                }
+
+                PillButton {
+                    text: @tr("Newest");
+                    active: !Comments.hot;
+                    clicked => { Comments.select-time(); }
+                }
+
+                IconButton {
+                    icon: "refresh";
+                    tooltip-text: @tr("Retry");
+                    clicked => { Comments.reload(); }
+                }
+
+                if !root.embedded: IconButton {
+                    icon: "close";
+                    tooltip-text: @tr("Close");
+                    clicked => { Comments.close(); }
+                }
+            }
+        }
+
+        // Thread list.
+        content := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            list := ListView {
+                x: 0;
+                y: 0;
+                width: parent.width - Theme.scrollbar-slot;
+                height: parent.height;
+                viewport-width: self.width;
+                horizontal-scrollbar-policy: always-off;
+                vertical-scrollbar-policy: always-off;
+
+                for row[i] in Comments.rows: CommentRowView {
+                    comment: row;
+                    toggle-like => {
+                        Comments.toggle-like(i, row.remote-id, !row.liked);
+                    }
+                    reply => {
+                        Comments.set-reply-target(row.remote-id, row.author);
+                    }
+                    show-replies => {
+                        Comments.open-replies(row.remote-id);
+                    }
+                    remove => {
+                        Comments.delete-comment(row.remote-id);
+                    }
+                }
+            }
+
+            OverlayScrollbar {
+                horizontal: false;
+                x: parent.width - self.width;
+                y: 0;
+                width: Theme.scrollbar-slot;
+                height: parent.height;
+                visible-size: list.visible-height;
+                content-size: list.viewport-height;
+                offset: -list.viewport-y;
+                scroll-to(o) => { list.viewport-y = -o; }
+            }
+
+            if Comments.loading && Comments.rows.length == 0: Text {
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if Comments.error != "" && Comments.rows.length == 0: GridEmptyState {
+                icon: "cloud_off";
+                title: @tr("Couldn't load comments");
+                body: Comments.error;
+                action-icon: "refresh";
+                action-label: @tr("Retry");
+                action-clicked => { Comments.reload(); }
+            }
+
+            if !Comments.loading && Comments.error == "" && Comments.rows.length == 0: GridEmptyState {
+                icon: "chat";
+                title: @tr("No comments yet");
+                body: @tr("Start the conversation.");
+            }
+        }
+
+        // Paging footer. A failed page keeps the thread it loaded, so its notice takes the More
+        // pill's place and the pill returns only once a retry lands.
+        if Comments.more-error != "": HorizontalLayout {
+            alignment: center;
+            padding-top: Theme.pad-xs;
+            padding-bottom: Theme.pad-xs;
+            spacing: Theme.pad-sm;
+
+            Text {
+                text: @tr("Couldn't load more");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                vertical-alignment: center;
+            }
+
+            PillButton {
+                icon: "refresh";
+                text: Comments.loading-more ? @tr("Loading…") : @tr("Retry");
+                enabled: !Comments.loading-more;
+                clicked => { Comments.load-more(); }
+            }
+        }
+
+        // Only while there is another page to ask for.
+        if Comments.more-error == "" && Comments.has-more: HorizontalLayout {
+            alignment: center;
+            padding-top: Theme.pad-xs;
+            padding-bottom: Theme.pad-xs;
+
+            PillButton {
+                text: Comments.loading-more ? @tr("Loading…") : @tr("More");
+                enabled: !Comments.loading-more;
+                clicked => { Comments.load-more(); }
+            }
+        }
+
+        // Composer, lifted out of the page with its own fill and top hairline: on the dark
+        // variants `surface1` on `base` is quiet enough that a borderless field reads as empty
+        // space rather than as the place to type.
+        composer := Rectangle {
+            background: Theme.surface0;
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: 100%;
+                height: 1px;
+                // `Theme.border` is `surface0` in every Catppuccin variant, so it would vanish
+                // against this fill.
+                background: Theme.surface2;
+            }
+
+            // One thin strip: the thread above it is what the page is for. Vertical padding is
+            // a hairline, the horizontal inset the page's own.
+            VerticalLayout {
+                padding-left: Theme.pad-md;
+                padding-right: Theme.pad-md;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                spacing: 2px;
+
+                if Comments.reply-to-id != "": HorizontalLayout {
+                    spacing: Theme.pad-xs;
+
+                    Text {
+                        text: @tr("Reply") + " · " + Comments.reply-to-author;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+
+                    IconButton {
+                        icon: "close";
+                        a11y-label: @tr("Close");
+                        diameter: 24px;
+                        clicked => { Comments.cancel-reply(); }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.pad-sm;
+
+                    // The explicit floor is the mount's own: a host cannot measure a component
+                    // whose layout info is empty, and a zero-width stretch is indistinguishable
+                    // from a field that was never painted.
+                    composer-input := MultilineInput {
+                        text <=> Comments.draft;
+                        edited => { Comments.draft-edited(); }
+                        placeholder: @tr("Write a comment…");
+                        placeholder-color: Theme.subtext0;
+                        // Small enough to leave the counter and Post their room at the
+                        // window's own minimum width.
+                        min-width: 100px;
+                        // The text keeps its size; what shrinks is the frame around it. `flat`
+                        // drops the fill, border and radius so this is one line of text standing
+                        // in the composer bar rather than a box inside a box.
+                        flat: true;
+                        min-height: 54px;
+                        preferred-height: 54px;
+                        pad: 4px;
+                        horizontal-stretch: 1;
+                    }
+
+                    // Counter and Post share one line: stacking them doubled the composer's
+                    // height, which is the strip the thread above it is paying for.
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: Theme.pad-xs;
+
+                        Text {
+                            text: "\{Comments.draft-count} / \{Comments.draft-limit}";
+                            color: Comments.draft-count > Comments.draft-limit
+                                ? Theme.danger
+                                : Theme.overlay1;
+                            font-size: Theme.font-size-sm;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                        }
+
+                        PillButton {
+                            text: Comments.posting ? @tr("Sending…") : @tr("Post");
+                            icon: "check";
+                            enabled: !Comments.posting && Comments.draft != ""
+                                && Comments.draft-count <= Comments.draft-limit;
+                            clicked => { Comments.post(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Reply floor, over the thread so the parent stays visible behind it. It stops above the
+    // composer: the floor's rows hand their Reply back to that same composer, which has to stay
+    // reachable while the floor is up.
+    if Comments.replies-open: Rectangle {
+        x: parent.width - self.width;
+        y: 0;
+        width: min(parent.width, 380px);
+        height: parent.height - composer.height;
+        background: Theme.mantle;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        VerticalLayout {
+            spacing: 0;
+
+            HorizontalLayout {
+                padding: Theme.pad-md;
+                spacing: Theme.pad-sm;
+
+                Text {
+                    text: @tr("Reply");
+                    color: Theme.text;
+                    font-size: Theme.font-size-lg;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                }
+
+                IconButton {
+                    icon: "close";
+                    tooltip-text: @tr("Close");
+                    clicked => { Comments.close-replies(); }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                clip: true;
+
+                replies-list := ListView {
+                    x: 0;
+                    y: 0;
+                    width: parent.width - Theme.scrollbar-slot;
+                    height: parent.height;
+                    viewport-width: self.width;
+                    horizontal-scrollbar-policy: always-off;
+                    vertical-scrollbar-policy: always-off;
+
+                    for row[i] in Comments.replies: CommentRowView {
+                        comment: row;
+                        is-reply: true;
+                        toggle-like => {
+                            Comments.toggle-reply-like(i, row.remote-id, !row.liked);
+                        }
+                        reply => {
+                            Comments.set-reply-target(row.remote-id, row.author);
+                            Comments.close-replies();
+                        }
+                        remove => {
+                            Comments.delete-comment(row.remote-id);
+                        }
+                    }
+                }
+
+                OverlayScrollbar {
+                    horizontal: false;
+                    x: parent.width - self.width;
+                    y: 0;
+                    width: Theme.scrollbar-slot;
+                    height: parent.height;
+                    visible-size: replies-list.visible-height;
+                    content-size: replies-list.viewport-height;
+                    offset: -replies-list.viewport-y;
+                    scroll-to(o) => { replies-list.viewport-y = -o; }
+                }
+
+                if Comments.replies-loading && Comments.replies.length == 0: Text {
+                    text: @tr("Loading…");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+
+                if !Comments.replies-loading && Comments.replies-error == ""
+                    && Comments.replies.length == 0: GridEmptyState {
+                    icon: "chat";
+                    title: @tr("No replies yet");
+                    body: @tr("Be the first to reply.");
+                }
+
+                if Comments.replies-error != "" && Comments.replies.length == 0: GridEmptyState {
+                    icon: "cloud_off";
+                    title: @tr("Couldn't load comments");
+                    body: Comments.replies-error;
+                    action-icon: "refresh";
+                    action-label: @tr("Retry");
+                    action-clicked => {
+                        Comments.open-replies(Comments.replies-parent-id);
+                    }
+                }
+            }
+        }
+    }
+}

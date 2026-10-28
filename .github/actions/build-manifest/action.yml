@@ -1,0 +1,24 @@
+name: build manifest
+description: Build latest.json from the signed release artifacts.
+inputs:
+  version:
+    required: true
+  tag:
+    required: true
+  artifacts:
+    default: artifacts
+  out:
+    default: latest.json
+  critical:
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        args=(--version "${{ inputs.version }}" --tag "${{ inputs.tag }}" \
+              --artifacts "${{ inputs.artifacts }}" --out "${{ inputs.out }}")
+        if [ "${{ inputs.critical }}" = "true" ]; then
+          args+=(--critical)
+        fi
+        python3 scripts/build-latest-json.py "${args[@]}"

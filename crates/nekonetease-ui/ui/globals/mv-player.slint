@@ -1,0 +1,36 @@
+// The in-app MV player's window onto the UI. Rust owns every value here; Slint only paints it and
+// sends the commands a viewer needs, so the playback engine never learns a Slint type.
+export global MvPlayer {
+    // Set while a video is being played and cleared on close, so the overlay's mount and the
+    // engine's own `Idle` state are one fact rather than two that can disagree.
+    in-out property <bool> open: false;
+    // The first frame has not arrived yet; the surface shows a dark placeholder instead of a
+    // stale frame from a previous MV.
+    in-out property <bool> loading: false;
+    in-out property <bool> playing: false;
+    in-out property <string> title;
+    // Empty unless playback failed. Rust fills it from the engine's `Failed` reason, which is not
+    // translated, so the overlay shows it verbatim under the heading.
+    in-out property <string> error;
+    in-out property <image> frame;
+    in-out property <bool> has-frame: false;
+    in-out property <int> position-ms: 0;
+    in-out property <int> duration-ms: 0;
+    // The overlay's volume, in the app's own percent so it reads the same as the player bar's.
+    // Rust converts to mpv's 0..=1 amplitude on the way out.
+    in-out property <int> volume: 100;
+    // The stream's `r` tier, one of 1080/720/480. Changing it restarts the same MV at that tier,
+    // so the property is the picker's mark as well as what Rust asked for.
+    in-out property <int> quality: 1080;
+    // True while the window is fullscreen because of this overlay, so the button, the keys and
+    // Escape all read one flag.
+    in-out property <bool> fullscreen: false;
+
+    callback close();
+    callback toggle-play();
+    // Absolute milliseconds; the overlay clamps it to the duration before sending.
+    callback seek(int);
+    callback set-volume(int);
+    callback set-quality(int);
+    callback set-fullscreen(bool);
+}

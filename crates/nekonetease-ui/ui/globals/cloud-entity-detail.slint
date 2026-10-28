@@ -1,0 +1,39 @@
+import { MvCardRow, PlaylistCommentRow, TrackListRow } from "../models.slint";
+
+// An online album or artist detail opened from a NetEase-backed track list. The global keeps the
+// detail mounted over the current page so closing it returns to the exact list the user came from.
+export global CloudEntityDetail {
+    in-out property <bool> open: false;
+    in-out property <string> kind;          // "album" | "artist"
+    in-out property <string> remote-id;     // exact 64-bit NetEase ID
+    in-out property <string> title;
+    in-out property <string> subtitle;
+    in-out property <string> artwork-path;
+    in-out property <[TrackListRow]> tracks;
+    in-out property <bool> loading: false;
+    in-out property <string> error;
+    in-out property <bool> album-favorite: false;
+    in-out property <bool> album-favorite-known: false;
+    in-out property <bool> album-favorite-pending: false;
+    in-out property <string> album-favorite-error;
+    // Album comments, capped in Rust like the playlist detail's preview.
+    in-out property <[PlaylistCommentRow]> comments;
+    in-out property <bool> comments-loading: false;
+    in-out property <string> comments-error;
+    // The artist's music videos, paged by `CloudEntityDetail.load-more-mvs`. Albums leave this
+    // empty and draw no strip.
+    in-out property <[MvCardRow]> mvs;
+    in-out property <bool> mvs-loading: false;
+    in-out property <bool> mvs-has-more: false;
+    in-out property <string> mvs-error;
+
+    callback close();
+    callback retry();
+    callback retry-comments();
+    callback toggle-comment-like(int /*index*/, int /*comment_id*/, bool /*next*/);
+    // The whole thread, over this preview. Lit only where the preview has rows.
+    callback open-comments();
+    callback play-cloud-row(string /*song ID*/, int /*index*/);
+    callback load-more-mvs();
+    callback open-mv(string /*MV ID*/);
+}

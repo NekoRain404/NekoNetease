@@ -1,0 +1,321 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Visualizer } from "../globals/audio.slint";
+import { Nav, NavEnterFrom } from "../globals/nav.slint";
+import { Player } from "../globals/player.slint";
+import { AccentDiscButton } from "../components/now-playing/accent-disc-button.slint";
+import { AccentGlyphButton } from "../components/now-playing/accent-glyph-button.slint";
+import { MetaChipStrip } from "../components/meta-chip-strip.slint";
+import { NowPlayingCover } from "../components/now-playing/now-playing-cover.slint";
+import { UpNextList } from "../components/now-playing/up-next-list.slint";
+import { LyricsPanel } from "../components/now-playing/lyrics-panel.slint";
+import { Lyrics } from "../globals/lyrics.slint";
+import { NpOverlayScrollbar } from "../components/now-playing/np-overlay-scrollbar.slint";
+import { LyricsControls } from "../components/now-playing/lyrics-controls.slint";
+import { VisualizerPicker } from "../components/now-playing/visualizer-picker.slint";
+import { VisualizerStrip } from "../components/now-playing/visualizer-strip.slint";
+import { NpBackdropStack } from "../components/now-playing/np-backdrop-stack.slint";
+
+// The full-screen Now Playing view, rendered inside the content panel — sidebar and now-playing
+// bar stay visible — when `Nav.now-playing-open`. A large centred artwork, title / artist / album,
+// and metadata chips floating directly on a blurred album-art backdrop, with an "Up Next" list
+// beside it. **Transport and seek are deliberately not duplicated here**: they live in the bar,
+// which stays visible below. The list itself lives in the shared `UpNextList`, so the miniplayer's
+// column reuses the same behaviour.
+export component NowPlayingView inherits Rectangle {
+    // Ceiling on the square cover's edge. The tile takes this much when the column has the height
+    // for it and less when it doesn't — the cover slot below is why the artwork gives ground.
+    property <length> cover-size: clamp(root.width * 0.22, 200px, 384px);
+
+    // **Where the cover stops giving ground.** That slot is the column's only slack, so with no
+    // floor a short panel takes the artwork down to nothing and then overflows anyway. A fraction
+    // of the panel rather than a fixed edge: on the shortest one a fixed floor is room the strip
+    // and the title block would have to find instead.
+    property <length> cover-min: clamp(root.height * 0.2, 72px, 160px);
+
+    // The ceiling keeps a tall screen from turning the base of the group into the group. The floor
+    // is how a short one pays for the cover's: the strip is the largest term under the artwork and
+    // the only one whose own reading survives being halved.
+    property <length> strip-h: clamp(root.height * 0.12, 28px, 128px);
+
+    // The strip's drop below the chips. Padding isn't something the layout can shrink on our
+    // behalf, so it comes off the panel height directly — the first thing a short window gives up.
+    property <length> strip-drop: clamp(root.height * 0.06, Theme.pad-sm, Theme.pad-lg * 2.5);
+
+    // The Up Next column, on a readable floor and a ceiling matching its old fixed width. Named
+    // rather than inlined because the body's left column — and so the chip strip's wrapping
+    // ceiling — is the panel minus this.
+    property <length> up-next-width: clamp(root.width * 0.35, 280px, 420px);
+
+    // What the artwork / title / chip column gets: the panel less its left padding, the
+    // inter-column gap and the Up Next column. `Player.recompute-chip-rows` chunks against it.
+    property <length> content-width: root.width - Theme.pad-lg - Theme.pad-md - root.up-next-width;
+
+    // The square the slot reserves. The tile is square at whichever axis runs out first, so on a
+    // narrow panel it is the column's width that decides — reserving the full ceiling there left a
+    // band of empty backdrop under the tile that everything below it could have used.
+    property <length> cover-h: clamp(root.content-width, root.cover-min, root.cover-size);
+
+    // **A band's column pitch is the ceiling, not the strip's.** The band count is fixed, so a
+    // strip that keeps widening divides the same bars into ever-fatter columns whatever height it
+    // is drawn at. Ten pixels, the 2px gap included, is where a resting mark stops reading as one.
+    // Reading the published count beats restating `spectrum::NUM_BANDS`; the `max` covers boot.
+    property <length> strip-w-max: 10px * max(1, Visualizer.band-count);
+
+    // Three quarters of that column, so the strip reads as the base of the whole cover → title →
+    // chips group. **The floor is not cosmetic**: at the window's own minimum `content-width` goes
+    // negative.
+    //
+    // Capped at the column *less both scrollbar lanes* besides. `cover-size` floors at 200px and
+    // only grows past it on a panel wider than ~900px, so on every narrower one the floor is wider
+    // than the whole column and the strip overhung both edges. Both lanes because the group is
+    // centred: clearing only the bar's own side would move the strip off the column's axis.
+    property <length> strip-w: max(0px, min(
+        root.content-width - 2 * Theme.scrollbar-slot,
+        max(root.cover-size, min(root.content-width * 0.75, root.strip-w-max))
+    ));
+
+    NpBackdropStack {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    // **Padding is per-section, not uniform on this layout**: the Up Next column has to
+    // reach the panel's right edge so its overlay scrollbar sits flush there.
+    VerticalLayout {
+        padding-top: Theme.pad-lg;
+        spacing: Theme.pad-md;
+
+        // Floats directly over the backdrop.
+        HorizontalLayout {
+            vertical-stretch: 0;
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            spacing: Theme.pad-sm;
+
+            VerticalLayout {
+                alignment: center;
+                AccentDiscButton {
+                    icon: "arrow_back";
+                    // Lateral: the view underneath remounts and samples this. See the
+                    // bar's own track-info card, which is the other half of the toggle.
+                    clicked => {
+                        Nav.pending-enter-from = NavEnterFrom.above;
+                        Nav.now-playing-open = false;
+                    }
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            VerticalLayout {
+                alignment: center;
+                AccentGlyphButton {
+                    icon: Player.vm.track.is_favorite ? "favorite" : "favorite_border";
+                    filled: Player.vm.track.is_favorite;
+                    active: Player.vm.track.is_favorite;
+                    button-enabled: Player.vm.has_track;
+                    clicked => { Player.toggle-favorite(); }
+                }
+            }
+
+            // The visualizer's style on its own glyph, its label a tooltip.
+            //
+            // Not gated on `vm.has_track` — a style means something with an empty queue.
+            VerticalLayout {
+                alignment: center;
+                VisualizerPicker { }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                LyricsControls { }
+            }
+        }
+
+        // The centred artwork group left, the Up Next column right, both floating on the backdrop
+        // with no card chrome. **No right or bottom padding**: the column reaches the panel edge on
+        // both axes, so its scrollbar lands flush and rows scroll off the bottom rather than under
+        // a strip of backdrop. The inset the artwork group wants goes on that column alone.
+        HorizontalLayout {
+            vertical-stretch: 1;
+            padding-left: Theme.pad-lg;
+            spacing: Theme.pad-md;
+
+            // Artwork, title and chips, vertically centred, and the scroller that keeps the group
+            // whole. The column spends the cover's slack first and scrolls only once its own
+            // floors no longer fit the panel — where before it ran out of slack and pushed the
+            // strip through the bottom edge, drawn in half with no way to reach the rest.
+            Rectangle {
+                horizontal-stretch: 1;
+
+                group-sv := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    horizontal-scrollbar-policy: always-off;
+                    vertical-scrollbar-policy: always-off;
+                    // Locked to the viewport: left alone a ScrollView sizes its content to the
+                    // content's own preferred width, and everything below centres against the
+                    // column rather than against the widest thing in it.
+                    viewport-width: group-sv.visible-width;
+                    // The visible height for as long as the column's floors fit inside it, so the
+                    // cover gives ground before anything scrolls, and the column's own minimum
+                    // past that. **Off the column, never off the scroller** — a ScrollView reports
+                    // a preferred height of its own and binds `viewport-height` back through it,
+                    // so reading that here closes the loop through this very property.
+                    viewport-height: max(group-sv.visible-height, group.min-height);
+
+                    group := VerticalLayout {
+                        alignment: center;
+                        // Both off the panel: padding is not something the layout can shrink on
+                        // our behalf, so on a short one it is the cheapest room in the group.
+                        padding-bottom: clamp(root.height * 0.04, Theme.pad-sm, Theme.pad-lg);
+                        spacing: clamp(root.height * 0.03, 6px, Theme.pad-md);
+
+                        // The high-res foreground cover, cross-fading through the dual-slot
+                        // pattern. **The slot is a plain Rectangle rather than a centring layout,
+                        // and the tile inside spells out `x` and `y`** — that pair is what makes
+                        // the artwork the only child of this column with slack, a non-layout
+                        // element folding its children's constraints *except* those carrying an
+                        // `x`/`y` binding. Every other child has min == preferred and Slint's
+                        // shrink pass can only take height off a cell with room between the two.
+                        cover-slot := Rectangle {
+                            min-height: root.cover-min;
+                            preferred-height: root.cover-h;
+                            max-height: root.cover-h;
+
+                            NowPlayingCover {
+                                // Square at whichever axis runs out first. The width term matters
+                                // on a narrow window, where the Up Next column holds its floor and
+                                // this one can end up narrower than the tile wants to be.
+                                tile-size: min(parent.height, parent.width);
+                                x: (parent.width - self.width) / 2;
+                                y: 0px;
+                            }
+
+                        }
+
+                        // Centred under the artwork.
+                        VerticalLayout {
+                            spacing: 4px;
+                            // Backdrop-solved rather than a `Theme.*` brush: these sit on the blur,
+                            // where a fixed brush lands light-on-light on a light theme. The album
+                            // line takes the muted tier at reduced alpha — a three-line hierarchy,
+                            // two solved tones.
+                            //
+                            // **Sizes come off the panel, each on its own floor.** Three lines at
+                            // full size are most of what a short panel has to give, and one shared
+                            // scale would take the album line under a readable size to buy the
+                            // title a point it doesn't need.
+                            Text {
+                                text: Player.source-title;
+                                color: Player.np-on-backdrop;
+                                font-size: clamp(root.height * 0.05, Theme.font-size-md, Theme.page-title-size);
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: Player.source-subtitle;
+                                color: Player.np-on-backdrop-muted;
+                                font-size: clamp(root.height * 0.04, Theme.font-size-sm, Theme.font-size-lg);
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                            // An `if` rather than `visible:` — a hidden child still claims its
+                            // cell, so an album-less track reserved a full text line for nothing.
+                            if Player.source-tertiary != "": Text {
+                                text: Player.source-tertiary;
+                                color: Player.np-on-backdrop-muted.transparentize(0.25);
+                                font-size: clamp(root.height * 0.035, Theme.font-size-sm, Theme.font-size-md);
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+
+                        // **The strip reserves its row unconditionally**, so the centred artwork
+                        // above never reflows when a slow fetch lands or a track has no metadata.
+                        // On a narrow window it grows downward, the strip reporting its width and
+                        // Rust re-chunking uncapped. Contents are gated on the track id, so a fetch
+                        // landing after a rapid track change is never shown against the wrong
+                        // track.
+                        if Player.vm.has_track: MetaChipStrip {
+                            rows: Player.chip-rows;
+                            show-rows: Player.track-meta.track_id == Player.vm.track.id;
+                            centred: true;
+                            chip-fill: Player.np-chip-fill;
+                            chip-label-color: Player.np-chrome-text;
+                            measured(w) => { Player.recompute-chip-rows(w); }
+                        }
+
+                        // The base under the whole cover → title → chips group. Wrapped in a
+                        // centring layout, a fixed-width child not centring in a wider column;
+                        // both dimensions come off the view root above.
+                        if Visualizer.enabled: HorizontalLayout {
+                            alignment: center;
+                            // Well below the column's shared spacing, so it reads as the base of
+                            // the group rather than one more line of metadata. **The column is
+                            // centred, so this splits between both ends** — budget twice the drop
+                            // you actually want.
+                            padding-top: root.strip-drop;
+                            VisualizerStrip {
+                                width: root.strip-w;
+                                strip-height: root.strip-h;
+                            }
+                        }
+                    }
+                }
+
+                // No gutter: the column centres everything it holds, so the bar's lane is backdrop
+                // rather than content, and it only paints at all on a panel too short to seat the
+                // group at its floors.
+                NpOverlayScrollbar {
+                    x: parent.width - self.width;
+                    y: 0;
+                    width: Theme.scrollbar-slot;
+                    height: parent.height;
+                    visible-size: group-sv.visible-height;
+                    content-size: group-sv.viewport-height;
+                    offset: -group-sv.viewport-y;
+                    scroll-to(o) => { group-sv.viewport-y = -o; }
+                }
+            }
+
+            // Responsive, so a narrow window doesn't squeeze the chip strip first, and
+            // reaching the panel's right edge so its scrollbar sits flush at any width.
+            VerticalLayout {
+                width: root.up-next-width;
+                spacing: Theme.pad-sm;
+
+                Text {
+                    // Translators: a heading in place of "Up Next", so keep it as short
+                    text: Lyrics.enabled ? @tr("Lyrics")
+                        : @tr("Up Next");
+                    // Accent-tinted like the divider under it but solid: a heading carries it at
+                    // full alpha where a hairline can't. The rows below keep the list palette.
+                    color: Player.np-accent-bright;
+                    font-size: Theme.font-size-lg;
+                    font-weight: 600;
+                }
+                Rectangle {
+                    height: 1px;
+                    // Weaker than the stars and heart above: a hairline, not a glyph, so it carries
+                    // at a lower alpha without turning into a stripe.
+                    background: Player.np-accent-bright.transparentize(0.55);
+                }
+
+                // The mini-player mounts the same component with `compact: true`.
+                if !Lyrics.enabled: UpNextList {
+                    vertical-stretch: 1;
+                    compact: false;
+                }
+
+                if Lyrics.enabled: LyricsPanel {
+                    vertical-stretch: 1;
+                }
+            }
+        }
+    }
+}

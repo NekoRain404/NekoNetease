@@ -1,0 +1,24 @@
+import { Theme } from "../../theme.slint";
+import { Player } from "../../globals/player.slint";
+import { RowCovers } from "../../globals/tracks.slint";
+import { ArtworkImage } from "../artwork-image.slint";
+
+// The shared track artwork tile used by the bar and miniplayer.
+// This tile is used at compact sizes. Larger artwork surfaces manage their own layout.
+export component SourceArtwork inherits ArtworkImage {
+    // The placeholder's two colours, as inputs so a host painting on an artwork backdrop
+    // can hand over the accent solved against the cover. Defaults restate `ArtworkImage`'s; they are
+    // the shared tile's, so change them there first.
+    in property <brush> track-tile-bg: Theme.accent.with-alpha(0.15);
+    in property <brush> track-tile-icon-color: Theme.accent;
+
+    // Resolve the same path/remote fallback as track rows. The global generation is what
+    // invalidates this binding when a remote album lookup and thumbnail fetch finish.
+    artwork-path: Player.vm.track.artwork_path;
+    out property <image> row-cover: RowCovers.request(Player.vm.track.artwork_path,
+        Player.vm.track.artist, Player.vm.track.album, RowCovers.generation);
+    cover: root.row-cover;
+    fallback-icon: "music-note";
+    tile-bg: root.track-tile-bg;
+    tile-icon-color: root.track-tile-icon-color;
+}

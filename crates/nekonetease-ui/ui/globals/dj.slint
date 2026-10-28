@@ -1,0 +1,70 @@
+import { EntityStripRow, TrackListRow, TrackColumns } from "../models.slint";
+
+// Podcast / DJ-radio browsing. The radio strip routes by row index rather than by station id:
+// `EntityStripRow.id` is an `int`, while the exact NetEase id is a 64-bit string Rust keeps
+// beside the model. `radio-remote-id` is that exact string once a station is opened.
+export global Dj {
+    in-out property <[EntityStripRow]> radios;
+    in-out property <bool> radios-loading: false;
+    in-out property <string> radios-error;
+
+    in-out property <string> radio-remote-id;
+    in-out property <string> radio-title;
+    in-out property <string> radio-host;
+    in-out property <string> radio-artwork-path;
+    in-out property <string> radio-description;
+    in-out property <bool> radio-loading: false;
+    in-out property <string> radio-error;
+    in-out property <bool> radio-subscribed: false;
+    in-out property <bool> radio-subscribe-pending: false;
+
+    in-out property <[TrackListRow]> programs;
+    // Episode number, title, host and length. The station already supplies the album, so the
+    // remaining columns stay hidden rather than repeating it on every row.
+    in-out property <TrackColumns> columns: {
+        w_number: 44px,
+        w_title: 320px,
+        w_artist: 180px,
+        w_album: 0px,
+        w_genre: 0px,
+        w_year: 0px,
+        w_length: 72px,
+        show_number: true,
+        show_artwork: true,
+        show_artist: true,
+        show_album: false,
+        show_genre: false,
+        show_year: false,
+    };
+    in-out property <bool> programs-loading: false;
+    in-out property <bool> programs-loading-more: false;
+    in-out property <bool> programs-has-more: false;
+    in-out property <string> programs-error;
+
+    in-out property <bool> detail-open: false;
+    in-out property <string> detail-remote-id;
+    in-out property <string> detail-title;
+    in-out property <string> detail-host;
+    in-out property <string> detail-artwork-path;
+    in-out property <string> detail-duration;
+    in-out property <string> detail-publish-date;
+    in-out property <string> detail-listeners;
+    in-out property <string> detail-description;
+    in-out property <bool> detail-loading: false;
+    in-out property <string> detail-error;
+    // The `mainSong` id the existing cloud playback path queues; empty when the episode has none.
+    in-out property <string> detail-song-id;
+
+    // The strip is fetched on the view's first mount; refresh is the user's own reload.
+    callback load();
+    callback refresh();
+    callback open-radio(int /*radio row index*/);
+    callback retry-radio();
+    callback load-more-programs();
+    callback retry-programs();
+    callback open-program-row(int /*programme row index*/);
+    callback close-detail();
+    callback retry-program();
+    callback play-program();
+    callback toggle-subscribe();
+}

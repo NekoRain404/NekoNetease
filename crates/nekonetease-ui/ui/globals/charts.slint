@@ -1,0 +1,22 @@
+import { SearchEntityRow } from "search.slint";
+
+// One virtualized grid row of chart cards. `Charts.rows` is chunked by Rust against the page's
+// `GridGeometry` answer, exactly as the library grids chunk their own cards.
+export struct ChartGridRow {
+    charts: [SearchEntityRow],
+}
+
+// The chart catalogue as a page of its own. Rows are Search's `SearchEntityRow` rather than a
+// second row type: the same catalogue is painted in Search's empty state, and two shapes would
+// let the surfaces disagree about what a chart is.
+export global Charts {
+    in-out property <[ChartGridRow]> rows;
+    in-out property <int> columns: 4;
+    in-out property <bool> loading: false;
+    // The catalogue is one request with no partial answer, so its failure is a retry prompt
+    // rather than a shortened list.
+    in-out property <bool> failed: false;
+    callback section-active-changed(bool);
+    callback retry();
+    callback columns-changed(int);
+}

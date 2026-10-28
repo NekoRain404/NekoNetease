@@ -1,0 +1,4 @@
+# cargo-audit configuration. An advisory is ignored only with a comment naming the affected
+# dependency and why the exposure does not reach us.
+[advisories]
+ignore = []

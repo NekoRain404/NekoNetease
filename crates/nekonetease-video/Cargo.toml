@@ -1,0 +1,27 @@
+[package]
+name = "nekonetease-video"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-app MV playback: a self-contained libmpv owner publishing software-rendered frames"
+publish = false
+
+[lib]
+doctest = false
+
+# Deliberately the whole list. No Slint, no workspace crates above `core`: this crate is an
+# engine the UI bridges onto, not a view.
+[dependencies]
+libmpv2.workspace = true
+libmpv2-sys.workspace = true
+tokio.workspace = true
+log.workspace = true
+nekonetease-core = { path = "../nekonetease-core" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

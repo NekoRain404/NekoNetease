@@ -1,0 +1,20 @@
+import { Theme } from "../../theme.slint";
+import { Settings } from "../../settings.slint";
+import { PopupSurface } from "../popup-surface.slint";
+import { FlyoutOption } from "flyout-option.slint";
+import { AudioQualityPresets } from "flyout-presets.slint";
+
+export component QualityFlyout inherits PopupSurface {
+    callback pick(string);
+
+    VerticalLayout {
+        padding: Theme.pad-xs;
+        spacing: 0;
+
+        for preset in AudioQualityPresets.list: FlyoutOption {
+            label: preset.label;
+            active: Settings.cloud-quality == preset.value;
+            clicked => { root.pick(preset.value); }
+        }
+    }
+}

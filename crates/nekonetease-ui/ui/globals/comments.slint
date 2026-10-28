@@ -1,0 +1,89 @@
+// The full comment thread surface: its rows, its ordering, the reply floor and the composer.
+//
+// Rust owns every value here. The two lists are separate models because the floor is opened
+// over the thread rather than paged into it, and the request tokens that keep a late page off
+// a newer thread live beside them.
+//
+// `CommentRow` sits in this file rather than `models.slint` because the surface is not mounted
+// by `app-window.slint` yet; whichever move mounts it only needs the global.
+
+export struct CommentRow {
+    // Slint's id, aliased past `i32::MAX`; `remote-id` is the exact value the routes address.
+    id: int,
+    remote-id: string,
+    author: string,
+    content: string,
+    // Already formatted by Rust: a NetEase timestamp does not survive a 32-bit integer.
+    display-time: string,
+    liked: bool,
+    liked-count: int,
+    reply-count: int,
+    // The comment this one answers, empty for a top-level row.
+    parent-id: string,
+    // Whether the signed-in account wrote it, and so may delete it.
+    owned: bool,
+    // The author's picture, empty when the wire omits it. Resolved through `request-cover`.
+    avatar-url: string,
+}
+
+export global Comments {
+    in-out property <bool> open: false;
+    in-out property <string> title;
+    in-out property <string> thread-kind;
+    in-out property <string> thread-id;
+
+    in-out property <[CommentRow]> rows;
+    in-out property <bool> loading: false;
+    in-out property <bool> loading-more: false;
+    // The first page's failure, which the empty-state block paints when there is nothing to keep.
+    in-out property <string> error;
+    // A page after the first failure: the rows already loaded stay, so the notice sits in the
+    // footer where the More pill was.
+    in-out property <string> more-error;
+    in-out property <int> total: 0;
+    in-out property <bool> has-more: false;
+    // The ordering currently asked for; the two routes count offsets independently.
+    in-out property <bool> hot: true;
+    in-out property <int> offset: 0;
+
+    // The remote-picture cache's revision. A row binds it so a decode landing after the row
+    // was built re-runs the lookup; the same contract `Social` uses for its avatars.
+    in-out property <int> remote-covers-generation: 0;
+    pure callback request-cover(string /*avatar_url*/, int /*generation*/) -> image;
+
+    in-out property <string> draft;
+    // Character count of `draft`. Slint has no `string.length`, so Rust recomputes it on every
+    // edit; the composer's counter and its over-limit state both read this.
+    in-out property <int> draft-count: 0;
+    // The gate that actually refuses an overlong comment is Rust's; this is the same number for
+    // the composer's counter, which cannot reach across the tree to read it.
+    in-out property <int> draft-limit: 140;
+    in-out property <bool> posting: false;
+    // Bumped when a row's Reply names a target, so the composer can take focus. A tick rather
+    // than focus itself: a Slint component's focus method is not a property Rust can set.
+    in-out property <int> composer-focus-tick: 0;
+    // Empty when the composer posts a top-level comment.
+    in-out property <string> reply-to-id;
+    in-out property <string> reply-to-author;
+
+    in-out property <[CommentRow]> replies;
+    in-out property <bool> replies-open: false;
+    in-out property <bool> replies-loading: false;
+    in-out property <string> replies-error;
+    in-out property <string> replies-parent-id;
+
+    callback close();
+    callback reload();
+    callback load-more();
+    callback select-hot();
+    callback select-time();
+    callback toggle-like(int, string, bool);
+    callback delete-comment(string);
+    callback open-replies(string);
+    callback close-replies();
+    callback toggle-reply-like(int, string, bool);
+    callback set-reply-target(string, string);
+    callback cancel-reply();
+    callback draft-edited();
+    callback post();
+}

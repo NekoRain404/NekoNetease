@@ -1,0 +1,238 @@
+// Catppuccin Mocha tokens. The 19 theme-dependent brushes are `in-out` so `themes::apply()` can
+// swap palettes at runtime, the values here painting correctly before settings load; layout,
+// typography and motion stay `out` — design system, not user choice.
+
+export global Theme {
+    // Surfaces / structure
+    in-out property <brush> base: #1e1e2e;
+    in-out property <brush> mantle: #181825;
+    // What `WindowChrome.mantle` resolves to when the window is unfocused *and* the KDE-only "Match
+    // Unfocused Window Background" toggle is on; Breeze's inactive titlebar under KDE, read off
+    // `kdeglobals` on its System variant, falling back to `base` everywhere else.
+    in-out property <brush> mantle-unfocused: #1e1e2e;
+    in-out property <brush> crust: #11111b;
+    in-out property <brush> surface0: #313244;
+    in-out property <brush> surface1: #45475a;
+    in-out property <brush> surface2: #585b70;
+
+    // Overlays / text
+    in-out property <brush> overlay0: #6c7086;
+    in-out property <brush> overlay1: #7f849c;
+    in-out property <brush> overlay2: #9399b2;
+    in-out property <brush> text: #cdd6f4;
+    in-out property <brush> subtext0: #a6adc8;
+    in-out property <brush> subtext1: #bac2de;
+    in-out property <brush> border: #313244;
+
+    // `text` stepped back, for a settings row's description. `subtext0` is its own palette slot
+    // and reads as a second colour beside the label, where a multiplied alpha keeps the hue.
+    out property <brush> text-muted: root.text.transparentize(0.2);
+
+    // How far a disabled settings row steps its copy and control back, as an alpha so the two rows
+    // state it once. No further than unavailable — starting from `text-muted` the two dims compound.
+    out property <float> dim-disabled: 0.4;
+
+    // How much of its weight a disk-only Browse file keeps, present in a library folder but not in
+    // the database. One value, since the list row and the card draw the same file.
+    out property <float> fade-disk-only: 0.45;
+
+    // Where a lit control rests while nothing is pointing at it, as an alpha. Full weight belongs
+    // to the pointer, so a control already at it has nothing left to answer a hover with. Shared
+    // rather than spelled per component because the Now-Playing star row and the glyph family
+    // beside it sit in one row: a lift on one that its neighbour answers flat reads as a fault.
+    out property <float> lit-rest: 0.9;
+
+    // Accent (default mauve) + colour on accent
+    in-out property <brush> accent: #cba6f7;
+    in-out property <brush> accent-text: #1e1e2e;
+
+    // sRGB luma over gamma-encoded channels — **not** the relative luminance `ui/backdrop.rs`
+    // solves scrims against. A hand-copy of `themes::on_accent_hex`, pinned from both ends
+    // by `themes::tests::theme_slint_is_light_matches_on_accent_hex`. It answers the polarity
+    // question the palette can't, `Palette` carrying no light/dark flag and the two *generated*
+    // palettes no variant id to match on.
+    public pure function is-light(fill: brush) -> bool {
+        return (0.2126 * fill.red + 0.7152 * fill.green + 0.0722 * fill.blue) / 255 > 0.5;
+    }
+
+    // Ink for a glyph or label painted directly on `fill`. **Reach for this wherever the surface
+    // underneath isn't the accent** — `accent-text` answers a question about the *accent*, so a
+    // light theme with a light accent puts near-black on dark red. Literals, not tokens: absolute
+    // ink for a fill of known lightness.
+    public pure function ink-on(fill: brush) -> brush {
+        return root.is-light(fill) ? #1e1e2e : #ffffff;
+    }
+
+    // Every theme defines all three — `crates/nekonetease-core/src/themes/palette.rs` says why
+    // there is no fallback.
+    // `green` and `yellow` are signals: traffic lights and success / warning toasts.
+    in-out property <brush> red: #f38ba8;
+    in-out property <brush> green: #a6e3a1;
+    in-out property <brush> yellow: #f9e2af;
+
+    // Destructive-action aliases, so call sites read `danger` rather than `red`. **Hover is
+    // deliberately not a token** — the destructive `SectionButton` brightens its own fill.
+    out property <brush> danger: root.red;
+    out property <brush> danger-text: root.ink-on(root.danger);
+
+    // Chrome floating over busy content. **Nearly opaque on purpose**: softer and the artwork reads
+    // through, leaving the control looking like a watermark. The residual translucency is what
+    // keeps `IconButton`'s hover swap to solid `surface0` legible as a transition.
+    out property <brush> floating-chrome-bg: root.surface0.with-alpha(0.75);
+
+    // `OverlayScrollbar`'s track for a bar on a **card** rather than the page. The default is
+    // `surface0` at half alpha, which over a `surface0` dialog composites to exactly `surface0` and
+    // leaves the thumb nothing to gauge extent against. `crust` is a recess under every palette.
+    out property <brush> scrollbar-track-on-card: root.crust;
+
+    // Layout
+    out property <length> sidebar-collapsed-w: 46px;
+    out property <length> sidebar-default-w: 180px;
+    out property <length> sidebar-min-w: 105px;
+    out property <length> sidebar-max-w: 400px;
+    out property <length> now-playing-h: 72px;
+    // Track-row content height.
+    out property <length> row-h: 46px;
+    // Compact height when the thumbnail is hidden, sized to clear the hover swap-in.
+    out property <length> row-h-compact: 34px;
+    out property <length> row-gap: 0px;
+    // A track row's pill, which the thumbnail column decides between.
+    public pure function track-row-h(show-artwork: bool) -> length {
+        return show-artwork ? root.row-h : root.row-h-compact;
+    }
+    // The slot a row takes in its list, pill plus the gap under it. Slot math that leaves the gap
+    // out drifts further with every row down the list.
+    public pure function track-row-pitch(show-artwork: bool) -> length {
+        return root.track-row-h(show-artwork) + root.row-gap;
+    }
+    // The column header over every track list.
+    out property <length> track-header-h: 36px;
+    // A track list's inset from the content panel's left edge, before the column solver's own
+    // `pad-sm`. The right edge stops at `scrollbar-slot` instead.
+    out property <length> track-list-inset: 7px;
+
+    // Radii / spacing
+    out property <length> radius-sm: 4px;
+    out property <length> radius-md: 8px;
+    out property <length> radius-lg: 12px;
+    // The rounded mantle shell — the visible window outline in custom-frame windowed mode.
+    // Deliberately decoupled from `radius-md` so component radii stay put when it moves.
+    in-out property <length> shell-radius: 6px;
+    // The host desktop's corner radius, seeded once from `get_os_corner_radius()` so native mode
+    // matches it regardless of the persisted pick — that pick governs custom mode, which the user
+    // opted into. Hence the greyed-out "Managed by the operating system" row in Settings. Read
+    // through `window-radius`.
+    in-out property <length> native-content-radius: 6px;
+
+    // The floor of `AppWindow`'s `resize-band`, the depth of a frameless window's resize grab along
+    // each edge. `ResizeRing` sizes its corners off the band it is handed, never off this directly.
+    out property <length> resize-border: 4px;
+
+    // How far in from the window edge a KDE caption cluster sits, in the titlebar and the
+    // miniplayer alike. Breeze keeps its buttons 4 px in, and a KDE cell carries 2 px of that.
+    out property <length> kde-caption-edge-pad: 2px;
+
+    // The `OverlayScrollbar` *element's* slot, distinct from the 8 px it paints inside it. Both bar
+    // components size their bar by it, a track list's right edge stops at it so a row's pill never
+    // runs under the always-painted track, and every hand-mounted bar takes its width from here
+    // rather than restating the number.
+    out property <length> scrollbar-slot: 10px;
+
+    // The air a menu or flyout leaves between itself and the control that opened it, on whichever
+    // side it hangs. Seven popups across three directories anchor on it, so it is here rather than
+    // beside any one family of them: a gap differing by a pixel or two between two of them reads
+    // as one being misplaced, and nothing about the source says which is the odd one. The two
+    // dropdown-shaped pickers (`settings/dropdown.slint`) hang at 4px
+    // and are outside it; folding them in moves pixels, so it is a design call and not tidying.
+    out property <length> popup-gap: 8px;
+
+    // The one ink drawn on a name-hashed tile and the glyph beside it. Theme-independent on
+    // purpose: it stays legible against generated stops without being re-tuned by a palette.
+    out property <brush> tile-ink: #ffffff.transparentize(0.1);
+
+    out property <length> pad-xs: 4px;
+    out property <length> pad-sm: 8px;
+    out property <length> pad-md: 12px;
+    out property <length> pad-lg: 16px;
+
+    // The artwork tile every hero band leads with. **One number rather than six** — the banners are
+    // the same band under different content, and a tile changing size between them reads as the
+    // page shifting under a nav. It sets each band's *height* too, so shrinking it costs the detail
+    // heroes first, whose right column barely clears the tile once the chips wrap.
+    out property <length> hero-artwork: 140px;
+
+    // Typography
+    out property <length> font-size-sm: 12px;
+    out property <length> font-size-row: 13px;
+    out property <length> font-size-md: 14px;
+    out property <length> font-size-lg: 16px;
+
+    // What a size derived from a live dimension rounds to, so text drawn through a resize steps
+    // rather than tracking the drag: FemtoVG keeps a glyph for every tenth of a pixel it has drawn at,
+    // in an atlas it never evicts.
+    out property <length> text-size-step: 0.5px;
+
+    // Shared by every view's header band; a subtitle reuses `font-size-sm` + `subtext0`.
+    out property <length> page-title-size: 20px;
+    out property <int> page-title-weight: 600;
+    out property <brush> page-title-color: root.text;
+
+    // The hero banners' title, a step above a page heading because it sits on a blurred band beside
+    // the tile rather than a flat header row. **It has a ceiling**: the two heroes carrying a second
+    // text line nest it inside the title row, so raising this spends the slack a chip row needs.
+    out property <length> hero-title-size: 22px;
+
+    // Easing is inlined at each `animate` site: Slint 1.16 can't expose an `easing` property
+    // across the Rust boundary, and a global one warns at build time.
+    out property <duration> dur-fast: 200ms;
+    out property <duration> dur-med: 250ms;
+    out property <duration> dur-spatial: 400ms;
+
+    // **`window_chrome` must hydrate this between `AppWindow::new()` and `app.show()`**: Slint applies
+    // `no-frame` live, so a later write maps the window with the wrong frame and swaps it on screen.
+    in-out property <bool> use-native-titlebar: false;
+
+    // The corner radius for the titlebar mode in force: the user's pick under the custom titlebar,
+    // the host's under the native one. The miniplayer draws its own outline once it drops the OS
+    // frame, and on `shell-radius` it changed shape the moment the frame went.
+    out property <length> window-radius: use-native-titlebar ? native-content-radius : shell-radius;
+
+    // 0 = Windows (its caption glyphs), 1 = macOS (traffic lights), 2 = KDE (Breeze's glyphs).
+    // `custom-titlebar.slint` reads it through `Theme` rather than reaching into `Settings`, the
+    // `shell-radius` precedent.
+    in-out property <int> titlebar-button-style: 0;
+
+    // 0 = Right, 1 = Left. Same hydration shape.
+    in-out property <int> titlebar-button-side: 0;
+
+    // Raw mirror of winit's `WindowEvent::Focused(bool)`. The KDE-only unfocused tint also gates on
+    // `use-native-titlebar`, the toggle defaulting on under KDE and surviving a titlebar disable.
+    in-out property <bool> window-focused: true;
+
+    // Which backdrop the artwork-derived surfaces paint. On `Theme` because both colour tiers ask —
+    // `Player.np-*` and `HeroBackdrop` are deliberately separate — and `ui::backdrop::kind` is its
+    // only Rust reader, so no publisher can solve for one surface while the mount paints the other.
+    // **`in`, not `in-out`**: the two arms publish different tiers, so a mid-session flip leaves one
+    // stack painting the other's colours, and the qualifier is what pins
+    // `boot::ui_setup::chrome::apply_backdrop_style` as the only writer. The default matches the
+    // setting's.
+    in property <bool> aurora-backdrop: true;
+
+    // Integer arithmetic, so no float rounding; anything ≤ 0 collapses to "0:00", which lets
+    // the now-playing bar format a mid-transition position safely.
+    public pure function format-duration(ms: int) -> string {
+        // **Must stay byte-identical to `format_duration_ms`** — the rows use the Rust-precomputed
+        // string while the now-playing bar calls this.
+        ms <= 0
+            ? "0:00"
+            : Math.floor(ms / 3600000) > 0
+                ? Math.floor(ms / 3600000) + ":"
+                    + (Math.mod(Math.floor(ms / 60000), 60) < 10 ? "0" : "")
+                    + Math.mod(Math.floor(ms / 60000), 60) + ":"
+                    + (Math.mod(Math.floor(ms / 1000), 60) < 10 ? "0" : "")
+                    + Math.mod(Math.floor(ms / 1000), 60)
+                : Math.floor(ms / 60000) + ":"
+                    + (Math.mod(Math.floor(ms / 1000), 60) < 10 ? "0" : "")
+                    + Math.mod(Math.floor(ms / 1000), 60)
+    }
+}

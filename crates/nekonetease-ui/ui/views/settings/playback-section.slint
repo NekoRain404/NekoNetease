@@ -1,0 +1,224 @@
+import { Settings } from "../../settings.slint";
+import { SettingsPage } from "../../globals/settings-page.slint";
+import { Visualizer } from "../../globals/audio.slint";
+import { SectionCard } from "../../components/settings/section-card.slint";
+import { SectionDivider } from "../../components/settings/section-divider.slint";
+import { SettingRow } from "../../components/settings/setting-row.slint";
+import { SettingRowStacked } from "../../components/settings/setting-row-stacked.slint";
+import { ToggleSwitch } from "../../components/settings/toggle-switch.slint";
+import { ChipGroup } from "../../components/settings/chip-group.slint";
+import { SettingSlider } from "../../components/settings/setting-slider.slint";
+import { VizStylePresets } from "../../components/now-playing/flyout-presets.slint";
+
+// Three plain rows, plus two clusters whose sub-rows mount only while their
+// toggle is on: crossfade (duration slider + three sub-toggles) and the
+// visualizer (style picker). Search visibility follows `language-section.slint`.
+export component PlaybackSection inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    in property <string> tab-name;
+
+    property <string> card-title: @tr("Playback");
+
+    pure function row-visible(label: string, desc: string) -> bool {
+        return SettingsPage.row-visible(root.tab-name, root.card-title,
+                                        label + " " + desc,
+                                        SettingsPage.search-query);
+    }
+
+    // Seconds ↔ 0..1 track fraction. The bounds are seeded onto `Settings` from
+    // the player's own constants, so this is the only copy of the mapping.
+    pure function secs-to-frac(s: float) -> float {
+        return (s - Settings.crossfade-min-secs)
+            / (Settings.crossfade-max-secs - Settings.crossfade-min-secs);
+    }
+    pure function frac-to-secs(f: float) -> float {
+        return Settings.crossfade-min-secs
+            + f * (Settings.crossfade-max-secs - Settings.crossfade-min-secs);
+    }
+
+    // Each row's pair, declared once and read by both the visibility term and the row. The
+    // predicate is fed `label + " " + desc`, so a copy at either site can drift out of what
+    // search matches on.
+    property <string> gapless-label: @tr("Gapless Playback");
+    property <string> gapless-desc: @tr("Seamless transitions between tracks without silence gaps");
+    property <string> hwdec-label: @tr("Hardware Video Decoding");
+    property <string> hwdec-desc: @tr("Let the GPU decode music videos when the system supports it");
+    property <string> anim-label: @tr("Play Button Animation");
+    property <string> anim-desc: @tr("Visual effect on the play button while music is playing");
+    property <string> crossfade-label: @tr("Crossfade");
+    property <string> crossfade-desc: @tr("Overlap the end of one track with the start of the next");
+    property <string> crossfade-format-desc: @tr("Overlap the end of one track with the start of the next, unless the device has to change format between them");
+    property <string> xf-duration-label: @tr("Crossfade duration");
+    property <string> xf-duration-desc: @tr("How long the two tracks overlap");
+    property <string> xf-album-label: @tr("Except on the same album");
+    property <string> xf-album-desc: @tr("Keep tracks from one album gapless, so continuous mixes stay seamless");
+    property <string> xf-manual-label: @tr("Also on manual track change");
+    property <string> xf-manual-desc: @tr("Crossfade when you skip to the next or previous track, not only at the end of one");
+    property <string> xf-pause-label: @tr("Fade out on pause");
+    property <string> xf-pause-desc: @tr("Fade the music out when pausing or stopping, and back in when resuming");
+    property <string> visualizer-label: @tr("Visualizer");
+    property <string> visualizer-desc: @tr("Show an audio visualizer on the Now Playing screen");
+    property <string> viz-style-label: @tr("Visualizer Style");
+    property <string> viz-style-desc: @tr("Choose how the visualizer draws the audio");
+
+    // Per row, feeding both the inner `if` and the section's `has-matches`.
+    property <bool> show-gapless: row-visible(gapless-label, gapless-desc);
+    property <bool> show-hwdec: row-visible(hwdec-label, hwdec-desc);
+    property <bool> show-anim: row-visible(anim-label, anim-desc);
+    // The cluster searches as one unit: any of its labels reveals the toggle plus whichever
+    // sub-rows are mounted, so every sub-row's pair is a term here. Left off, a sub-row is
+    // reachable only by scrolling to it.
+    property <bool> show-crossfade: row-visible(crossfade-label, crossfade-desc)
+        || row-visible(xf-duration-label, xf-duration-desc)
+        || row-visible(xf-album-label, xf-album-desc)
+        || row-visible(xf-manual-label, xf-manual-desc)
+        || row-visible(xf-pause-label, xf-pause-desc);
+
+    // One unit again, which is also what keeps the upstream dividers' gates
+    // right with no further edits.
+    property <bool> show-visualizer: row-visible(visualizer-label, visualizer-desc)
+        || row-visible(viz-style-label, viz-style-desc);
+
+    // An `if` rather than `visible`, which would still claim the layout slot.
+    property <bool> show-viz-style: root.show-visualizer && Visualizer.enabled;
+
+    // Same reason as the style row above.
+    property <bool> show-crossfade-details: root.show-crossfade && Settings.crossfade-enabled;
+
+    out property <bool> has-matches:
+        show-gapless || show-hwdec || show-anim || show-crossfade || show-visualizer;
+
+    // Wrapper so the root's preferred-height tracks the card's natural height —
+    // a `Rectangle` sizes from a layout child, never from a conditional one.
+    // See `language-section.slint`.
+    VerticalLayout {
+    if has-matches: SectionCard {
+        title: root.card-title;
+
+        if root.show-gapless: SettingRow {
+            icon: "graphic_eq";
+            label: root.gapless-label;
+            description: root.gapless-desc;
+            ToggleSwitch {
+                checked <=> Settings.gapless-playback;
+                toggled(v) => { Settings.gapless-playback-changed(v); }
+            }
+        }
+        // Each gates on a visible row either side, so none is left stranded.
+        if root.show-gapless && (root.show-hwdec || root.show-crossfade || root.show-anim || root.show-visualizer): SectionDivider {}
+
+        if root.show-hwdec: SettingRow {
+            icon: "play_circle";
+            label: root.hwdec-label;
+            description: root.hwdec-desc;
+            ToggleSwitch {
+                checked <=> Settings.hardware-video-decoding;
+                toggled(v) => { Settings.hardware-video-decoding-changed(v); }
+            }
+        }
+        if root.show-hwdec && (root.show-crossfade || root.show-anim || root.show-visualizer): SectionDivider {}
+
+        if root.show-crossfade: SettingRow {
+            icon: "swap_horiz";
+            label: root.crossfade-label;
+            description: Settings.rate-follows ? root.crossfade-format-desc : root.crossfade-desc;
+            ToggleSwitch {
+                checked <=> Settings.crossfade-enabled;
+                toggled(v) => { Settings.crossfade-enabled-changed(v); }
+            }
+        }
+
+        if root.show-crossfade-details: SettingRowStacked {
+            icon: "history";
+            label: root.xf-duration-label;
+            description: root.xf-duration-desc;
+            SettingSlider {
+                value: root.secs-to-frac(Settings.crossfade-duration-secs);
+                // Translators: `{}` is a duration in seconds, such as 2.5
+                readout: @tr("{} s", round(Settings.crossfade-duration-secs * 10) / 10);
+                readout-width: 48px;
+                // Live during the drag, persist on release.
+                changed(v) => { Settings.crossfade-duration-changed(root.frac-to-secs(v)); }
+                committed(v) => { Settings.crossfade-duration-committed(root.frac-to-secs(v)); }
+            }
+        }
+
+        if root.show-crossfade-details: SettingRow {
+            icon: "album";
+            label: root.xf-album-label;
+            description: root.xf-album-desc;
+            ToggleSwitch {
+                checked <=> Settings.crossfade-skip-same-album;
+                toggled(v) => { Settings.crossfade-skip-same-album-changed(v); }
+            }
+        }
+
+        if root.show-crossfade-details: SettingRow {
+            icon: "queue_play_next";
+            label: root.xf-manual-label;
+            description: root.xf-manual-desc;
+            ToggleSwitch {
+                checked <=> Settings.crossfade-manual;
+                toggled(v) => { Settings.crossfade-manual-changed(v); }
+            }
+        }
+
+        if root.show-crossfade-details: SettingRow {
+            icon: "pause";
+            label: root.xf-pause-label;
+            description: root.xf-pause-desc;
+            ToggleSwitch {
+                checked <=> Settings.crossfade-fade-on-pause;
+                toggled(v) => { Settings.crossfade-fade-on-pause-changed(v); }
+            }
+        }
+        if root.show-crossfade && (root.show-anim || root.show-visualizer): SectionDivider {}
+
+        if root.show-anim: SettingRowStacked {
+            icon: "animation";
+            label: root.anim-label;
+            description: root.anim-desc;
+            ChipGroup {
+                options: [
+                    @tr("None"),
+                    @tr("Equalizer"),
+                ];
+                selected-index <=> Settings.play-button-animation-idx;
+                selected(i) => { Settings.play-button-animation-changed(i); }
+            }
+        }
+        if root.show-anim && root.show-visualizer: SectionDivider {}
+
+        // Binds `Visualizer` directly rather than mirroring its flags onto
+        // `Settings` — it owns its own state and callbacks, as the EQ dialog
+        // does. Both two-way bindings have landed the value by the time the
+        // callback fires, so the callbacks only persist.
+        if root.show-visualizer: SettingRow {
+            icon: "bar_chart";
+            label: root.visualizer-label;
+            description: root.visualizer-desc;
+            ToggleSwitch {
+                checked <=> Visualizer.enabled;
+                toggled(v) => { Visualizer.set-enabled(v); }
+            }
+        }
+        if root.show-visualizer && root.show-viz-style: SectionDivider {}
+
+        if root.show-viz-style: SettingRowStacked {
+            icon: "show_chart";
+            label: root.viz-style-label;
+            description: root.viz-style-desc;
+            // The same list the Now-Playing flyout renders, so the two pickers
+            // can't drift.
+            ChipGroup {
+                options: VizStylePresets.viz-style-names;
+                selected-index <=> Visualizer.style-idx;
+                selected(i) => { Visualizer.set-style(i); }
+            }
+        }
+    }
+    }
+}

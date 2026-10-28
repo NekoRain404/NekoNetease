@@ -1,0 +1,207 @@
+import { Theme } from "../../theme.slint";
+import { HeroBackdrop } from "../../globals/hero-backdrop.slint";
+import { NavEnterFrom } from "../../globals/nav.slint";
+import { HeroChipStrip } from "../hero-chip-strip.slint";
+import { HeroBackdropStack } from "hero-backdrop-stack.slint";
+import { MosaicHeroTile } from "mosaic-hero-tile.slint";
+import { TabSearchHeader } from "tab-search-header.slint";
+
+// The pinned banner both tabbed mosaic pages wear: `TabSearchHeader` over the artwork square, the
+// title and the chip band. Favorites and Recently Played mount one each and differ only in their
+// strings, their tab list and the pills they pass as `@children`.
+//
+// **Data-agnostic on purpose.** A Slint component can't be parameterised over a global and
+// `Favorites` / `RecentlyPlayed` are distinct generated types — the wall Rust answers with a
+// trait over the generated globals (`ui::detail_view::HeroSlots`), and the reason this is a
+// component rather than a third copy.
+export component MosaicTabHero inherits Rectangle {
+    // **Inline `[@tr("…"), …]` at the call site** — an array populated from Rust renders
+    // untranslated. Forwarding one through here keeps the literal in a `.slint` file.
+    in property <[string]> tab-labels;
+    in property <[string]> tab-icons;
+    // Two-way, per the orphaned-one-way-binding pitfall — the bar writes this on every pick.
+    in-out property <int> tab-idx;
+
+    in property <string> title;
+    in property <string> filter-placeholder;
+    // The band's own empty state: a sentence rather than a "0 tracks" chip. The gate is the host's,
+    // only it knowing which tab is mounted and what its unfiltered count is.
+    in property <bool> show-empty-copy;
+    in property <string> empty-copy;
+
+    in property <int> mosaic-count;
+    in property <image> mosaic-cover;
+    in property <string> empty-glyph;
+    in property <bool> empty-glyph-filled: false;
+
+    in property <image> blur-a;
+    in property <image> blur-b;
+    in property <bool> use-a;
+    in property <bool> has-blur;
+
+    in-out property <string> filter;
+    in property <int> blur-tick;
+
+    // Fires *after* the direction and arming have settled, so a host handler that clears its
+    // filter and calls into Rust can't be sequenced ahead of them.
+    callback tab-selected(int);
+    callback search-edited(string);
+
+    // --- The header width budget ------------------------------------------
+    //
+    // `page-w` is a **mirror** — a live `root.width` read feeding a child's size re-enters layout —
+    // seeded at the header row's own **floor**. The mount `Timer` is mandatory, `changed` not
+    // firing when the first layout settles directly on the final value.
+    property <length> page-w: 2 * Theme.pad-lg + header.row-floor;
+    changed width => { self.page-w = self.width; }
+
+    Timer {
+        interval: 1ms;
+        triggered => {
+            root.page-w = root.width;
+            self.running = false;
+        }
+    }
+
+    // Derived rather than a literal, so growing the artwork or the bar can't leave the banner
+    // cropping its own contents. The row's height comes off the bar itself, through the header.
+    out property <length> hero-height:
+        2 * Theme.pad-lg + header.row-h + Theme.pad-md + Theme.hero-artwork;
+
+    // --- The bar's palette --------------------------------------------------
+    //
+    // The four brushes the header row paints with, mirrored so a late solve *moves* rather than
+    // steps — and it lands later here than on a detail hero, this page's solve riding the mosaic
+    // atlas compose. `hero-label` has a fifth reader, the band's own title, which paints the same
+    // tier and would otherwise step while the labels beside it eased. A plain `animate` and no
+    // `states` block: this band never morphs, so there is no crossing for a `change_time` to
+    // anchor. The bar itself must not ease these — see `tab-bar.slint`'s two floats.
+    property <brush> hero-label: HeroBackdrop.on-backdrop;
+    property <brush> hero-active: HeroBackdrop.chrome;
+    property <brush> hero-hover: HeroBackdrop.on-backdrop.transparentize(0.88);
+    property <brush> hero-divider: HeroBackdrop.tile-edge;
+    animate hero-label, hero-active, hero-hover, hero-divider {
+        duration: Theme.dur-med;
+        easing: ease-in-out;
+    }
+
+    // --- Forwarded from the shared header ---------------------------------
+    //
+    // Re-published under the names the two curated pages read; argued in `tab-search-header.slint`.
+    out property <NavEnterFrom> tab-enter-from <=> header.tab-enter-from;
+    out property <bool> tab-anim-armed <=> header.tab-anim-armed;
+
+    out property <length> tip-x:
+        header.absolute-position.x - root.absolute-position.x + header.tip-x;
+    out property <length> tip-y:
+        header.absolute-position.y - root.absolute-position.y + header.tip-y;
+    out property <length> tip-w <=> header.tip-w;
+    out property <length> tip-h <=> header.tip-h;
+    out property <string> tip-label <=> header.tip-label;
+    out property <bool> tip-visible <=> header.tip-visible;
+
+    vertical-stretch: 0;
+    height: root.hero-height;
+
+    // Behind everything else, and unconditionally shown: this band never stops painting a hero,
+    // where `LibraryTabBand` gates on its own `detail-open`. The gradient floor shows through when
+    // there is no blur image.
+    HeroBackdropStack {
+        x: 0; y: 0;
+        width: 100%; height: 100%;
+        blur-a: root.blur-a;
+        blur-b: root.blur-b;
+        use-a: root.use-a;
+        has-blur: root.has-blur;
+    }
+
+    VerticalLayout {
+        padding: Theme.pad-lg;
+        spacing: Theme.pad-md;
+
+        // The same row Settings mounts, which is why it takes brushes at all. Here it paints on the
+        // blur, so the bar takes `HeroBackdrop` tiers rather than its `Theme.*` defaults;
+        // `SearchBar` is the documented exception and keeps its own chrome.
+        header := TabSearchHeader {
+            tab-labels: root.tab-labels;
+            tab-icons: root.tab-icons;
+            tab-idx <=> root.tab-idx;
+            avail-w: root.page-w - 2 * Theme.pad-lg;
+
+            filter <=> root.filter;
+            filter-placeholder: root.filter-placeholder;
+            blur-tick: root.blur-tick;
+
+            // All four through the eased mirrors above, never the tiers directly.
+            label-color: root.hero-label;
+            // One input for the selected label, its FILL=1 icon and the underline, so it has to be
+            // a hero token like the other three: `Theme.accent` carries no contrast floor against a
+            // pinned band where `chrome` is solved to clear 3:1. The cost is that the selected label
+            // sits a tier below the idle ones — splitting the two means a second `TabBar` input.
+            active-color: root.hero-active;
+            hover-fill: root.hero-hover;
+            divider-color: root.hero-divider;
+
+            tab-selected(i) => { root.tab-selected(i); }
+            search-edited(t) => { root.search-edited(t); }
+        }
+
+        // Artwork tile + title block.
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: Theme.pad-lg;
+
+            VerticalLayout {
+                alignment: start;
+                horizontal-stretch: 0;
+
+                MosaicHeroTile {
+                    count: root.mosaic-count;
+                    cover: root.mosaic-cover;
+                    empty-glyph: root.empty-glyph;
+                    empty-glyph-filled: root.empty-glyph-filled;
+                }
+            }
+
+            // Title, chips, and whatever action pills the host hands over.
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: stretch;
+                spacing: Theme.pad-xs;
+
+                Text {
+                    vertical-stretch: 0;
+                    // Leading LRM keeps the title left-anchored under RTL.
+                    text: "\u{200e}" + root.title;
+                    // `hero-label`, not the tier it mirrors: taken raw the title snaps to the new
+                    // solve while the tab labels beside it ease to the identical colour, and they
+                    // are one text tier.
+                    color: root.hero-label;
+                    font-size: Theme.hero-title-size;
+                    font-weight: Theme.page-title-weight;
+                    horizontal-alignment: left;
+                    // The default `clip` scissors a `Text` at its line box, shorter than the ink.
+                    overflow: elide;
+                }
+
+                // Which chips the band shows follows the tab, decided in `ui::hero_chips`. **An
+                // empty tab publishes none** and the line below takes over.
+                HeroChipStrip { }
+
+                if root.show-empty-copy: Text {
+                    vertical-stretch: 0;
+                    text: root.empty-copy;
+                    color: HeroBackdrop.on-backdrop-muted;
+                    font-size: Theme.font-size-md;
+                    horizontal-alignment: left;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                // After the spacer, so the pills sit on the band's floor beside the tile's
+                // bottom edge — the slack `HERO_MAX_ROWS` is measured against.
+                @children
+            }
+        }
+    }
+}

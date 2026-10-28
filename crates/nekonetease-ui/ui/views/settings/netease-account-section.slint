@@ -1,0 +1,393 @@
+import { CloudAccount } from "../../settings.slint";
+import { Theme } from "../../theme.slint";
+import { SettingsPage } from "../../globals/settings-page.slint";
+import { SectionCard } from "../../components/settings/section-card.slint";
+import { SectionButton } from "../../components/settings/section-button.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+import { LabeledInput } from "../../components/labeled-input.slint";
+import { NeteaseCaptchaForm } from "netease-captcha-form.slint";
+import { NeteaseDevicesSection } from "netease-devices-section.slint";
+
+// Account state is application-owned; credentials live in this mounted form only and are handed
+// directly to the account service when the user submits them.
+export component NeteaseAccountSection inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    in property <string> tab-name;
+    in-out property <int> login-mode: 2; // 0 password, 1 email, 2 QR code, 3 SMS code
+    in-out property <string> phone;
+    in-out property <string> country-code: "86";
+    in-out property <string> email;
+    in-out property <string> password;
+
+    property <string> card-title: @tr("NetEase account");
+    property <string> account-label: @tr("NetEase Music account");
+    property <string> login-label: @tr("Sign in to NetEase Music");
+    property <string> account-desc: @tr("Connect an account to use personal recommendations, collections and playback permissions");
+
+    pure function row-visible(label: string, desc: string) -> bool {
+        return SettingsPage.row-visible(root.tab-name, root.card-title,
+                                        label + " " + desc,
+                                        SettingsPage.search-query);
+    }
+
+    out property <bool> has-matches: row-visible(account-label, account-desc)
+        || row-visible(login-label, "")
+        || row-visible(@tr("Phone number"), @tr("Country code"))
+        || row-visible(@tr("Email"), @tr("Password"))
+        || row-visible(@tr("QR code"), @tr("Scan this code with the NetEase Music app"))
+        || (!CloudAccount.logged-in
+            && row-visible(@tr("SMS code"), @tr("Send verification code")))
+        || (CloudAccount.logged-in
+            && (row-visible(@tr("Login devices"), @tr("Devices signed in to this account"))
+                || row-visible(@tr("My profile"), "")
+                || row-visible(@tr("Messages"), "")
+                || row-visible(@tr("Notifications"), "")))
+        || row-visible(@tr("Cloud beans"), "")
+        || row-visible(@tr("Check in"), @tr("Checked in"));
+
+    VerticalLayout {
+        if root.has-matches: SectionCard {
+            title: root.card-title;
+
+            if CloudAccount.logged-in: VerticalLayout {
+                padding: Theme.pad-lg;
+                spacing: Theme.pad-md;
+
+                HorizontalLayout {
+                    spacing: Theme.pad-md;
+                    alignment: start;
+
+                    Rectangle {
+                        width: 40px;
+                        height: 40px;
+                        border-radius: self.width / 2;
+                        clip: true;
+                        background: Theme.surface1;
+
+                        if CloudAccount.avatar-image.width > 0: Image {
+                            source: CloudAccount.avatar-image;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: cover;
+                        }
+                        if CloudAccount.avatar-image.width == 0: MaterialIcon {
+                            name: "person";
+                            icon-size: 22px;
+                            icon-color: Theme.subtext0;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Theme.pad-xs;
+                        alignment: center;
+
+                        Text {
+                            text: root.account-label;
+                            color: Theme.text;
+                            font-size: Theme.font-size-md;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: CloudAccount.account-name;
+                            color: Theme.subtext0;
+                            font-size: Theme.font-size-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if CloudAccount.account-vip || CloudAccount.account-level > 0: HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    alignment: start;
+                    if CloudAccount.account-vip: Text {
+                        text: "VIP";
+                        color: Theme.accent;
+                        font-size: Theme.font-size-sm;
+                        font-weight: 700;
+                    }
+                    if CloudAccount.account-level > 0: Text {
+                        text: @tr("Lv. {}", CloudAccount.account-level);
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+                if CloudAccount.beans-loaded: Text {
+                    text: @tr("Cloud beans: {}", CloudAccount.bean-balance);
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+                if CloudAccount.notice != "": Text {
+                    text: CloudAccount.notice;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+                if !CloudAccount.remember-available: Text {
+                    text: @tr("The system credential store is unavailable. This session will end when NekoNetease closes.");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Theme.pad-sm;
+                    SectionButton {
+                        label: @tr("My profile");
+                        icon: "person";
+                        primary: false;
+                        clicked => { CloudAccount.open-social(0); }
+                    }
+                    SectionButton {
+                        label: @tr("Messages");
+                        icon: "chat";
+                        primary: false;
+                        clicked => { CloudAccount.open-social(1); }
+                    }
+                    SectionButton {
+                        label: @tr("Notifications");
+                        icon: "favorite";
+                        primary: false;
+                        clicked => { CloudAccount.open-social(2); }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: Theme.pad-sm;
+                    SectionButton {
+                        label: CloudAccount.signed-today ? @tr("Checked in") : @tr("Check in");
+                        icon: "check_circle";
+                        primary: !CloudAccount.signed-today;
+                        button-enabled: !CloudAccount.busy && !CloudAccount.beans-busy
+                            && !CloudAccount.signed-today;
+                        clicked => { CloudAccount.check-in(); }
+                    }
+                    SectionButton {
+                        label: @tr("Sign out");
+                        leading-icon-image: @image-url("../../assets/icons/lucide/log-out.svg");
+                        primary: false;
+                        button-enabled: !CloudAccount.busy;
+                        clicked => { CloudAccount.logout(); }
+                    }
+                }
+
+                NeteaseDevicesSection {}
+            }
+
+            if !CloudAccount.logged-in: VerticalLayout {
+                padding: Theme.pad-lg;
+                spacing: Theme.pad-md;
+
+                Text {
+                    text: root.account-desc;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    horizontal-alignment: root.login-mode == 2 ? center : left;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    alignment: root.login-mode == 2 ? center : start;
+                    spacing: Theme.pad-sm;
+                    SectionButton {
+                        label: @tr("Phone");
+                        leading-icon-image: @image-url("../../assets/icons/lucide/phone.svg");
+                        primary: root.login-mode == 0;
+                        button-enabled: !CloudAccount.busy;
+                        clicked => {
+                            CloudAccount.cancel-qr-login();
+                            root.login-mode = 0;
+                        }
+                    }
+                    SectionButton {
+                        label: @tr("Email");
+                        leading-icon-image: @image-url("../../assets/icons/lucide/mail.svg");
+                        primary: root.login-mode == 1;
+                        button-enabled: !CloudAccount.busy;
+                        clicked => {
+                            CloudAccount.cancel-qr-login();
+                            root.login-mode = 1;
+                        }
+                    }
+                    SectionButton {
+                        label: @tr("QR code");
+                        leading-icon-image: @image-url("../../assets/icons/lucide/qr-code.svg");
+                        primary: root.login-mode == 2;
+                        button-enabled: !CloudAccount.busy;
+                        clicked => {
+                            root.login-mode = 2;
+                            CloudAccount.start-qr-login();
+                        }
+                    }
+                    SectionButton {
+                        label: @tr("SMS code");
+                        leading-icon-image: @image-url("../../assets/icons/lucide/phone.svg");
+                        primary: root.login-mode == 3;
+                        button-enabled: !CloudAccount.busy;
+                        clicked => {
+                            CloudAccount.cancel-qr-login();
+                            root.login-mode = 3;
+                        }
+                    }
+                }
+
+                if root.login-mode == 0: VerticalLayout {
+                    spacing: Theme.pad-sm;
+                    LabeledInput {
+                        label: @tr("Country code");
+                        placeholder: "86";
+                        text <=> root.country-code;
+                    }
+                    LabeledInput {
+                        label: @tr("Phone number");
+                        placeholder: @tr("Enter your phone number");
+                        text <=> root.phone;
+                    }
+                    LabeledInput {
+                        label: @tr("Password");
+                        placeholder: @tr("Enter your password");
+                        text <=> root.password;
+                        is-password: true;
+                        accepted => { root.submit-phone(); }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        SectionButton {
+                            label: @tr("Sign in");
+                            leading-icon-image: @image-url("../../assets/icons/lucide/log-in.svg");
+                            button-enabled: !CloudAccount.busy;
+                            clicked => { root.submit-phone(); }
+                        }
+                    }
+                }
+
+                if root.login-mode == 1: VerticalLayout {
+                    spacing: Theme.pad-sm;
+                    LabeledInput {
+                        label: @tr("Email");
+                        placeholder: @tr("Enter your email address");
+                        text <=> root.email;
+                    }
+                    LabeledInput {
+                        label: @tr("Password");
+                        placeholder: @tr("Enter your password");
+                        text <=> root.password;
+                        is-password: true;
+                        accepted => { root.submit-email(); }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        SectionButton {
+                            label: @tr("Sign in");
+                            leading-icon-image: @image-url("../../assets/icons/lucide/log-in.svg");
+                            button-enabled: !CloudAccount.busy;
+                            clicked => { root.submit-email(); }
+                        }
+                    }
+                }
+
+                if root.login-mode == 3: NeteaseCaptchaForm {
+                    phone <=> root.phone;
+                    country-code <=> root.country-code;
+                }
+
+                if root.login-mode == 2: VerticalLayout {
+                    alignment: center;
+                    spacing: Theme.pad-md;
+                    padding-top: Theme.pad-sm;
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            if CloudAccount.qr-image.width > 0: Image {
+                                source: CloudAccount.qr-image;
+                                width: 220px;
+                                height: 220px;
+                                image-fit: contain;
+                            }
+                            if CloudAccount.qr-image.width == 0: Image {
+                                source: @image-url("../../assets/icons/lucide/qr-code.svg");
+                                width: 72px;
+                                height: 72px;
+                                image-fit: contain;
+                                colorize: Theme.subtext0;
+                            }
+                            Text {
+                                text: root.qr-status-label();
+                                color: Theme.subtext0;
+                                font-size: Theme.font-size-sm;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                alignment: center;
+                                SectionButton {
+                                    label: @tr("Refresh code");
+                                    leading-icon-image: @image-url("../../assets/icons/lucide/refresh-cw.svg");
+                                    button-enabled: !CloudAccount.qr-busy;
+                                    clicked => { CloudAccount.start-qr-login(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if CloudAccount.busy: Text {
+                    text: @tr("Connecting…");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    horizontal-alignment: center;
+                }
+                if CloudAccount.notice != "": Text {
+                    text: CloudAccount.notice;
+                    color: Theme.danger;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+                if !CloudAccount.remember-available: Text {
+                    text: @tr("The system credential store is unavailable. This session will end when NekoNetease closes.");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    public function submit-phone() {
+        CloudAccount.notice = "";
+        CloudAccount.login-phone(root.phone, root.country-code, root.password);
+        root.password = "";
+    }
+
+    public function submit-email() {
+        CloudAccount.notice = "";
+        CloudAccount.login-email(root.email, root.password);
+        root.password = "";
+    }
+
+    pure function qr-status-label() -> string {
+        if CloudAccount.qr-status == 1 { return @tr("Generating QR code…"); }
+        if CloudAccount.qr-status == 2 { return @tr("Scan this code with the NetEase Music app."); }
+        if CloudAccount.qr-status == 3 { return @tr("Scanned. Confirm login on your phone."); }
+        if CloudAccount.qr-status == 4 { return @tr("QR code expired. Refresh to try again."); }
+        if CloudAccount.qr-status == 5 { return @tr("Login successful."); }
+        if CloudAccount.qr-status == 6 { return @tr("Could not start QR login."); }
+        return "";
+    }
+
+    property <bool> watched-logged-in: CloudAccount.logged-in;
+    changed watched-logged-in => {
+        if !self.watched-logged-in {
+            root.login-mode = 0;
+            root.password = "";
+            CloudAccount.cancel-qr-login();
+        }
+    }
+}

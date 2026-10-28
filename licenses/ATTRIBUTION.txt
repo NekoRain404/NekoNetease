@@ -1,0 +1,308 @@
+Third-party software bundled with NekoNetease
+=========================================
+
+NekoNetease links the work below into its executable -- the fonts
+are compiled in rather than loaded from disk, the winit fork is built from this
+tree rather than fetched from crates.io, and some crates fetched from crates.io
+ask something of whoever ships a binary containing them -- so every artifact we
+ship (tarball, AppImage, RPM, DEB and MSI) is a distribution of it. The full
+license text for each sits beside this file, except where an entry says there is
+none to ship.
+
+Melodia's own license (AGPL-3.0-or-later) ships with this package as LICENSE
+and covers none of the software below.
+
+The "Files" lists give each component's path in the source repository, which is
+what identifies it -- the fonts, the mark and the fork are inside the binary,
+not installed. A crate has no such path; the entry names its version instead,
+and Cargo.lock is what pins it.
+
+Debian packages carry a fuller machine-readable version of this at
+/usr/share/doc/melodia/copyright; the two are kept in step by
+the_debian_copyright_quotes_the_licences_it_ships, in
+crates/nekonetease/tests/packaging.rs.
+
+
+Vazirmatn
+---------
+Version 33.003, by Saber Rastikerdar and the Vazirmatn Project Authors.
+https://github.com/rastikerdar/vazirmatn
+
+Licensed under the SIL Open Font License, Version 1.1 -- full text in
+Vazirmatn-OFL-1.1.txt.
+
+MODIFIED. `scripts/patch_vazirmatn.py` merges in the Greek, Russian, Ukrainian
+and Vietnamese letters it lacks from Roboto (see the Roboto entry below), then
+rewrites the OS/2 typo and hhea ascent/descent values so glyph mass lands at the
+line-box centre under the FemtoVG renderer; upstream's metrics are sized to
+clear Arabic combining marks and push centred Latin text upward at the app's UI
+sizes. Vazirmatn's own glyph outlines, capHeight, x-height and the usWin* clip
+bounds are untouched.
+
+Files:
+  crates/nekonetease-ui/ui/assets/fonts/vazirmatn/Vazirmatn-Regular.ttf
+  crates/nekonetease-ui/ui/assets/fonts/vazirmatn/Vazirmatn-Medium.ttf
+  crates/nekonetease-ui/ui/assets/fonts/vazirmatn/Vazirmatn-SemiBold.ttf
+
+Upstream declares NO Reserved Font Name -- its copyright line names the project
+and stops there -- so OFL section 5 imposes no rename on the patched build, and
+it keeps the Vazirmatn name. Check this again before bumping to a release whose
+copyright line has changed.
+
+Upstream notes that Vazirmatn's non-Arabic glyphs derive from Roboto under the
+Apache License 2.0; that combination is upstream's, and their OFL covers the
+result.
+
+
+Roboto
+------
+Version 3.004, by Google Inc.
+https://github.com/googlefonts/roboto-3-classic
+
+Licensed under the Apache License, Version 2.0 -- full text in Apache-2.0.txt.
+Upstream ships no NOTICE file, so section 4(d) carries nothing here.
+
+MODIFIED. `scripts/patch_vazirmatn.py` instances the variable font at the three
+weights the Vazirmatn faces above ship, subsets each instance to the Greek,
+Russian, Ukrainian and Vietnamese letters Vazirmatn lacks (CLDR's exemplar
+characters for each language) and the combining marks their decomposed
+spellings use, and merges those glyphs, with their kerning and mark
+positioning, into the Vazirmatn faces. No outline is altered. This is the
+release Vazirmatn's own Latin was imported from, so the added letters match it.
+
+Files:
+  crates/nekonetease-ui/ui/assets/fonts/vazirmatn/Vazirmatn-Regular.ttf
+  crates/nekonetease-ui/ui/assets/fonts/vazirmatn/Vazirmatn-Medium.ttf
+  crates/nekonetease-ui/ui/assets/fonts/vazirmatn/Vazirmatn-SemiBold.ttf
+
+Merged rather than shipped beside Vazirmatn, so the faces keep the Vazirmatn
+name and carry it under upstream's OFL, which is how upstream already ships its
+own Roboto-derived Latin.
+
+
+Noto Sans SC
+---------
+Version 2.004, by Adobe and Google.
+https://github.com/notofonts/noto-cjk
+
+Licensed under the SIL Open Font License, Version 1.1 -- full text in
+NotoSansSC-OFL-1.1.txt.
+
+UNMODIFIED. The Simplified Chinese regional-subset variable TrueType face is
+bundled as a separate family and selected for the zh_CN locale, so Han text is
+available without relying on fonts installed by the host operating system.
+
+Files:
+  crates/nekonetease-ui/ui/assets/fonts/NotoSansSC-VF.ttf
+
+The upstream font name is retained; its Reserved Font Name is not changed.
+
+
+Material Symbols Rounded
+------------------------
+Version 2.935, by Google LLC. Outlined (FILL=0) and filled (FILL=1) faces.
+https://github.com/google/material-design-icons
+
+Licensed under the Apache License, Version 2.0 -- full text in Apache-2.0.txt.
+Upstream ships no NOTICE file, so section 4(d) carries nothing here.
+
+MODIFIED. `scripts/subset-icon-fonts.sh` subsets both faces down to the icon
+ligatures listed in `scripts/icons.txt`, by glyph id with --no-layout-closure so
+the closure can't pull the rest of the catalogue back in. No outline is altered.
+
+Files:
+  crates/nekonetease-ui/ui/assets/fonts/MaterialSymbolsRounded.ttf
+  crates/nekonetease-ui/ui/assets/fonts/MaterialSymbolsRoundedFilled.ttf
+
+Neither face carries a license string in its name table, in the subsets or in
+the pristine upstream sources -- Apache-2.0.txt is the only copy that travels
+with them.
+
+
+winit
+-----
+Version 0.30.13, by Pierre Krieger and the winit contributors.
+https://github.com/rust-windowing/winit
+
+Licensed under the Apache License, Version 2.0 -- full text in Apache-2.0.txt,
+the same copy Material Symbols above is under. Upstream ships no NOTICE file.
+
+MODIFIED. The fork carries three commits on top of the v0.30.13 tag: PR #4009
+("wayland: register drag & drop events", by PeakKS), a WindowId fixup and URI
+percent-decoding. Together they give Wayland the DroppedFile / HoveredFile
+events winit has only ever delivered on X11, macOS and Windows
+(rust-windowing/winit#1881). The additions are cfg-gated to Linux. Applied
+through Cargo's [patch.crates-io], so this is what every platform builds
+against; see winit/README.md.
+
+Files:
+  winit/*
+
+Vendored in-tree rather than fetched, so a fresh clone and every CI runner build
+identically. The whole directory retires once upstream lands native Wayland
+drag-and-drop.
+
+
+The entries below are crates rather than files in this tree. They are named here,
+where the hundreds of other crates.io dependencies are not, because each asks
+something of whoever ships a binary containing it: five carry a copyleft license,
+whose text recipients of the binary are owed, and the sixth ships a NOTICE its
+own license asks be reproduced. An artifact we ship is not a published crate, so
+neither obligation is met by the crate's own files travelling on crates.io. Each
+is unmodified, and the corresponding source for each is the crate as published at
+the version Cargo.lock pins.
+
+
+Slint
+-----
+Version 1.16.1, by the Slint Developers.
+https://github.com/slint-ui/slint
+
+Licensed under the GNU General Public License, Version 3 -- full text in
+GPL-3.0.txt. Slint is offered under GPL-3.0-only or one of two Slint-specific
+licenses, and an AGPL project takes the GPL arm.
+
+The UI toolkit. The .slint markup in this repository is compiled against it and
+the generated code is linked into the executable.
+
+Files: none in this repository -- linked from crates.io at build time.
+
+
+Symphonia
+---------
+Version 0.6.1, by Philip Deljanov.
+https://github.com/pdeljanov/Symphonia
+
+Licensed under the Mozilla Public License, Version 2.0 -- full text in
+MPL-2.0.txt.
+
+Sixteen crates from one project: the core, the container readers and the
+decoders. They decode every audio file Melodia plays. MPL-2.0 section 3.2 asks
+that recipients of the executable be told the covered source is available under
+that license and be given a copy of it, which is what this entry and MPL-2.0.txt
+are.
+
+Files: none in this repository -- linked from crates.io at build time.
+
+
+libmpv2
+-------
+Version 6.0.0, by kohsine.
+https://github.com/kohsine/libmpv-rs
+
+Licensed under the GNU Lesser General Public License, Version 2.1 -- full text in
+LGPL-2.1.txt.
+
+The safe bindings the video player is written against. It links the system's
+libmpv at runtime instead of embedding one, so the executable contains no part
+of libmpv, and the relinking LGPL-2.1 section 6 asks for is the ordinary one:
+replace or upgrade the shared library. The crate itself is unmodified.
+
+Files: none in this repository -- linked from crates.io at build time.
+
+
+kakasi
+------
+Version 0.1.0, by Theta-Dev, after the KAKASI project.
+https://github.com/Theta-Dev/kakasi
+
+Licensed under the GNU General Public License, Version 3 -- full text in
+GPL-3.0.txt.
+
+It romanizes Japanese lyrics. Melodia is AGPL-3.0-or-later, and GPLv3 section 13
+is what permits the combination. The combined work is conveyed under the AGPL;
+this component remains under the GPL.
+
+Files: none in this repository -- linked from crates.io at build time.
+
+
+option-ext
+----------
+Version 0.2.0, by Simon Ochsenreither.
+https://github.com/soc/option-ext
+
+Licensed under the Mozilla Public License, Version 2.0 -- full text in
+MPL-2.0.txt, the same copy Symphonia above is under.
+
+A three-function extension trait, reached transitively through `dirs`, which is
+how Melodia finds the user's home and data directories. Listed for its license
+rather than its size.
+
+Files: none in this repository -- linked from crates.io at build time.
+
+
+uroman
+------
+Version 0.7.0, by fulm-o, after the uroman project.
+https://github.com/stellanomia/uroman-rs
+
+Licensed under the Apache License, Version 2.0 -- full text in Apache-2.0.txt,
+the same copy the winit fork above is under.
+
+It romanizes a lyric line written in a script the reader cannot sound out. The
+crate ships a NOTICE file, which section 4(d) asks be reproduced wherever the
+work is redistributed; this entry is that copy, rewrapped and not otherwise
+altered. It is the only entry here on permissive terms, and it is here for the
+NOTICE rather than for the license.
+
+  uroman-rs
+  Copyright 2025 fulm-o
+
+  This product is a Rust implementation of the 'uroman' universal romanizer.
+  It is licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  ==========================================================================
+
+  This product contains code derived from the 'uroman' software, which is
+  subject to the following license:
+
+  Copyright (C) 2015-2024 Ulf Hermjakob, USC Information Sciences Institute
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  Any publication of projects using uroman shall acknowledge its use: "This
+  project uses the universal romanizer software 'uroman' written by Ulf
+  Hermjakob, USC Information Sciences Institute (2015-2020)".
+  Bibliography: Ulf Hermjakob, Jonathan May, and Kevin Knight. 2018.
+  Out-of-the-box universal romanization tool uroman. In Proceedings of the 56th
+  Annual Meeting of Association for Computational Linguistics, Demo Track.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+Files: none in this repository -- linked from crates.io at build time.
+
+
+Rust dependencies
+-----------------
+Everything else Melodia links is an unmodified crate resolved from crates.io and
+pinned in Cargo.lock, under permissive terms and predominantly MIT and
+Apache-2.0. Those are not listed here individually: they are redistributed
+unmodified and their own license files travel in the published crates, where
+`cargo license` or a vendored checkout reproduces the set for any given release.
+Only the software this repository *modifies*, *carries a copy of*, links under a
+*copyleft* license, or ships a *NOTICE* its license asks us to reproduce is
+listed individually.

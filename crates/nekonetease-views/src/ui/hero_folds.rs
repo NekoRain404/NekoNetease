@@ -1,0 +1,123 @@
+//! The pure folds a hero band's chips are built from.
+//!
+//! Split out of [`crate::ui::hero_chips`], which is the *channel*. Nothing here touches
+//! Slint or that record: each takes a slice and returns a `Copy` or a `String`, so the
+//! two halves share no state and the folds are testable without an `AppWindow`.
+//!
+//! **These run on the worker that fetched the rows, never inside an
+//! `upgrade_in_event_loop`.** A broad genre's track list is the longest in the app and
+//! has no business being hashed on the UI thread — which is why the results are `Copy`
+//! and narrow, riding into the closure as finished values.
+
+use std::collections::HashSet;
+
+use crate::ui::util::len_as_i32;
+use nekonetease_core::entities::album::AlbumStats;
+use nekonetease_core::entities::genre::GenreList;
+use nekonetease_core::entities::track::{MostPlayedFavorite, TrackListRow};
+
+#[cfg(test)]
+#[path = "tests/hero_folds_tests.rs"]
+mod tests;
+
+/// How many distinct artists and albums a track list spans — the two facts a list-shaped
+/// hero can state that its stats row can't, a genre or playlist knowing how many
+/// *tracks* it holds and nothing about their spread. Two words wide, so it crosses an
+/// `upgrade_in_event_loop` for free.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct HeroFold {
+    pub artists: i32,
+    pub albums: i32,
+}
+
+/// What the Most Played tab sums to — its own totals, never the Songs tab's. The query
+/// behind it is a strict subset, so borrowing the Songs duration would overstate it by
+/// every favourite never played.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct MostPlayedTotals {
+    pub tracks: i32,
+    pub duration_ms: i64,
+    pub plays: i32,
+}
+
+/// Count the distinct artists and albums a track list spans, keyed on ids rather than
+/// names: an `i64` hashes far cheaper over a list this size, and a track with no album
+/// belongs to none — so `None` is skipped rather than pooled into an "unknown" bucket
+/// that would read as one more album.
+pub fn fold_tracks(rows: &[TrackListRow]) -> HeroFold {
+    let mut artists: HashSet<i64> = HashSet::new();
+    let mut albums: HashSet<i64> = HashSet::new();
+    for row in rows {
+        if let Some(id) = row.artist_id {
+            artists.insert(id);
+        }
+        if let Some(id) = row.album_id {
+            albums.insert(id);
+        }
+    }
+    HeroFold { artists: len_as_i32(artists.len()), albums: len_as_i32(albums.len()) }
+}
+
+/// Sum the Most Played tab's own totals off its cached rows. One walk rather than two:
+/// Recently Played's copy of this list is uncapped and library-wide and a row is mostly
+/// `String`, so a `sum` per field is a second pass over more memory than fits a cache to
+/// reach two `Copy` fields inside it.
+pub fn fold_most_played(rows: &[MostPlayedFavorite]) -> MostPlayedTotals {
+    let (duration_ms, plays) = rows.iter().fold((0i64, 0i32), |(duration_ms, plays), row| {
+        (duration_ms + row.duration_ms, plays + row.play_count)
+    });
+    MostPlayedTotals { tracks: len_as_i32(rows.len()), duration_ms, plays }
+}
+
+/// The genre most of a track list is tagged with, or `None` when it is split evenly
+/// enough that naming one would misrepresent the rest. An album is usually
+/// single-genre, so this reads as "the album's genre" there; a compilation that
+/// genuinely spans several gets no chip rather than whichever won by a track.
+///
+/// **Tallied per genre, not per rendered line.** A row carries every genre it is tagged with in
+/// one string, so an album whose tracks are all `Rock` and half also `Metal` holds two distinct
+/// lines and no majority, where what every track shares is `Rock`. The denominator stays *tracks*,
+/// each contributing at most once to any one name, so the winner is a genre more than half the
+/// tagged tracks carry — several can be, and the first in tag order takes it.
+pub fn dominant_genre(rows: &[TrackListRow]) -> Option<String> {
+    /// Share of the tracks the winner has to hold to be worth stating.
+    const MAJORITY: usize = 2;
+
+    let mut tally: Vec<(&str, usize)> = Vec::new();
+    // Reused across rows, so the whole fold allocates once however long the list is.
+    let mut in_row: Vec<&str> = Vec::new();
+    let mut tagged = 0usize;
+    for line in rows.iter().filter_map(|r| r.genre.as_deref()) {
+        // A line can spell one name twice: `names_in_line` splits a rendered column, and a genre
+        // whose own name holds the separator comes back as two. The denominator is tracks.
+        in_row.clear();
+        for name in GenreList::names_in_line(line) {
+            if !in_row.iter().any(|seen| seen.eq_ignore_ascii_case(name)) {
+                in_row.push(name);
+            }
+        }
+        if in_row.is_empty() {
+            continue;
+        }
+        tagged += 1;
+        for &name in &in_row {
+            match tally.iter_mut().find(|(seen, _)| seen.eq_ignore_ascii_case(name)) {
+                Some((_, count)) => *count += 1,
+                None => tally.push((name, 1)),
+            }
+        }
+    }
+    // Strict `>` rather than `max_by_key`, which keeps the *last* of equal maxima: where two names
+    // both clear the majority, the first is the one tag order calls primary.
+    let (name, count) =
+        tally.into_iter().reduce(|best, next| if next.1 > best.1 { next } else { best })?;
+    (count * MAJORITY > tagged).then(|| name.to_owned())
+}
+
+/// The span of release years across an artist's albums, or `None` when no album
+/// carries one. A single year answers `(y, y)` and is rendered without a dash.
+pub fn year_span(albums: &[AlbumStats]) -> Option<(i32, i32)> {
+    let mut years = albums.iter().filter_map(|a| a.year).filter(|y| *y > 0);
+    let first = years.next()?;
+    Some(years.fold((first, first), |(lo, hi), y| (lo.min(y), hi.max(y))))
+}

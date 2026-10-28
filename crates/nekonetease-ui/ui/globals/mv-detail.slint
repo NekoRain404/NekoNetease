@@ -1,0 +1,50 @@
+import { MvCardRow } from "../models.slint";
+
+// One online music video opened from an artist's filmography. A full overlay rather than a
+// `Dialog`, whose framework is a confirm/info body: the description is long prose and the cover
+// is the page's subject.
+export global MvDetail {
+    in-out property <bool> open: false;
+    in-out property <string> remote-id;     // exact 64-bit NetEase ID
+    in-out property <string> title;
+    in-out property <string> artist;
+    in-out property <string> artwork-path;
+    in-out property <string> publish-date;  // formatted in Rust; empty when the wire omits it
+    in-out property <string> duration;      // formatted in Rust
+    in-out property <string> play-count;    // formatted in Rust
+    in-out property <string> description;
+    in-out property <bool> loading: false;
+    in-out property <string> error;
+    // A stream lookup is in flight; Play stays disabled so a double click cannot open two.
+    in-out property <bool> resolving: false;
+
+    // The action row. The three counts come from the detail response; the like state and its
+    // count from the thread's own header, which the detail does not carry.
+    in-out property <bool> liked: false;
+    in-out property <bool> collected: false;
+    in-out property <int> like-count: 0;
+    in-out property <int> collect-count: 0;
+    in-out property <int> share-count: 0;
+    // A like or collect is account-scoped, so the two pills are offered only to a signed-in
+    // view and go quiet while a write is in flight.
+    in-out property <bool> can-act: false;
+    in-out property <bool> acting: false;
+
+    // The video's peers, fetched per open beside the detail. A failed request leaves the page
+    // usable, so the strip carries its own error rather than replacing the video.
+    in-out property <[MvCardRow]> similar-mvs;
+    in-out property <bool> similar-loading: false;
+    in-out property <string> similar-error;
+
+    callback close();
+    callback retry();
+    callback play();
+    // Writes the current tier to the user's Downloads folder; the save outlives the page, so
+    // the only progress it reports is the toast when it lands.
+    callback download();
+    callback toggle-like();
+    callback toggle-collect();
+    callback share();
+    callback open-similar(string);
+    callback retry-similar();
+}

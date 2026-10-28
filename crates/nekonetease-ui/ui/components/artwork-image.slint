@@ -1,0 +1,135 @@
+import { Theme } from "../theme.slint";
+
+// The square artwork tile. A decoded `cover` renders; otherwise the fallback glyph paints over
+// `tile-bg`. **Where that image comes from is the host's business**, and the two kinds differ: a
+// repeated tile binds `cover` to a lazy per-path lookup, so only a mounted tile costs a cache hit,
+// while the singletons are handed one image Rust decoded eagerly.
+export component ArtworkImage inherits Rectangle {
+    in property <string> artwork-path;
+    in property <image> cover;
+    // **Lets a host suppress a `cover` it has no way to withhold.** Slint has no empty-`image`
+    // literal, so a host choosing between several globals' covers still has to bind *one* of them
+    // on the arm that owns none — `LibraryTabBand`'s Genre hero is the case. Left to `cover.width`
+    // alone, that arm paints whichever sibling detail happened to be open. Defaulted `true`.
+    in property <bool> has-cover: true;
+    in property <length> tile-size: 56px;
+    in property <length> tile-radius: Theme.radius-md;
+    // Painted when no cover is present, as an SVG asset rather than a font glyph — see the branch
+    // below. Each entity view passes the name matching its own sidebar icon.
+    in property <string> fallback-icon: "music-note";
+    // Scales the cover *inside* the tile frame for the hover zoom; the tile's own clip crops it.
+    in property <float> cover-scale: 1.0;
+    // **The animated mirror, and what the ease belongs on.** Easing this rather than the derived
+    // size means a tile *frame* resize — the grid reflowing as the sidebar collapses — tracks
+    // instantly while a hover toggle still eases; animating the size conflates the two inputs.
+    property <float> anim-scale: root.cover-scale;
+    animate anim-scale { duration: Theme.dur-fast; easing: ease-in-out; }
+    // The shared default: a faintly accent-tinted square with an accent-coloured glyph.
+    in property <brush> tile-bg: Theme.accent.with-alpha(0.15);
+    in property <brush> tile-icon-color: Theme.accent;
+    // Fades the tile without a host `opacity`, which would layer — this root has children, so
+    // `need_layer` bails on neither condition. Two things an edit here can get wrong:
+    // `transparentize` multiplies alpha where `with-alpha` sets it and `tile-bg` is translucent by
+    // default; and the icons fade on `opacity` rather than through `colorize`, which the renderer
+    // caches per item as its own texture, so a brush moving per frame re-renders it per frame.
+    in property <float> fade: 1.0;
+
+    // The one question the tile asks, stated once — every fallback branch spelled its negation
+    // before.
+    property <bool> shows-cover: root.has-cover && root.cover.width > 0;
+    // The glyph is the last resort, so both of the others have to be absent for it to paint.
+    property <bool> shows-glyph: !root.shows-cover;
+
+    width: tile-size;
+    height: tile-size;
+    border-radius: tile-radius;
+    clip: true;
+
+    // Square, inside the clip. Painted on the root, the fill's rounded edge and the clip's both
+    // antialias the same curve under a cover, and the corner reads harder than its radius.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        background: root.tile-bg.transparentize(1.0 - root.fade);
+    }
+
+    if root.shows-cover: Image {
+        // Derived from the animating source, so size and centring track per frame with no lag.
+        width: parent.width * root.anim-scale;
+        height: parent.height * root.anim-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        source: root.cover;
+        image-fit: ImageFit.cover;
+        opacity: root.fade;
+    }
+
+    // **An SVG `Image`, not a Material Symbols glyph.** A glyph scales from its text-metrics origin
+    // and isn't centred within its advance box, so scaling `font-size` for the hover zoom drifts it
+    // sideways; an `Image` scales its *content* to fill the box. One `if` per name, because Slint
+    // can't compose an `@image-url` from a runtime string — resources resolve at codegen.
+    if root.shows-glyph && root.fallback-icon == "music-note": Image {
+        source: @image-url("../assets/icons/music-note.svg");
+        colorize: root.tile-icon-color;
+        image-fit: ImageFit.contain;
+        width: parent.width * 0.55 * root.anim-scale;
+        height: parent.height * 0.55 * root.anim-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.fade;
+    }
+    if root.shows-glyph && root.fallback-icon == "person": Image {
+        source: @image-url("../assets/icons/person.svg");
+        colorize: root.tile-icon-color;
+        image-fit: ImageFit.contain;
+        width: parent.width * 0.55 * root.anim-scale;
+        height: parent.height * 0.55 * root.anim-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.fade;
+    }
+    if root.shows-glyph && root.fallback-icon == "playlist": Image {
+        source: @image-url("../assets/icons/playlist.svg");
+        colorize: root.tile-icon-color;
+        image-fit: ImageFit.contain;
+        width: parent.width * 0.55 * root.anim-scale;
+        height: parent.height * 0.55 * root.anim-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.fade;
+    }
+    if root.shows-glyph && root.fallback-icon == "theater_comedy": Image {
+        source: @image-url("../assets/icons/theater-comedy.svg");
+        colorize: root.tile-icon-color;
+        image-fit: ImageFit.contain;
+        width: parent.width * 0.55 * root.anim-scale;
+        height: parent.height * 0.55 * root.anim-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.fade;
+    }
+    if root.shows-glyph && root.fallback-icon == "album": Image {
+        source: @image-url("../assets/icons/album.svg");
+        colorize: root.tile-icon-color;
+        image-fit: ImageFit.contain;
+        width: parent.width * 0.55 * root.anim-scale;
+        height: parent.height * 0.55 * root.anim-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.fade;
+    }
+    // Browse's card view, whose grid mixes subfolders and files — a folder card has no
+    // cover to have, so this is its resting state rather than a missing-artwork one.
+    if root.shows-glyph && root.fallback-icon == "folder": Image {
+        source: @image-url("../assets/icons/folder.svg");
+        colorize: root.tile-icon-color;
+        image-fit: ImageFit.contain;
+        width: parent.width * 0.55 * root.anim-scale;
+        height: parent.height * 0.55 * root.anim-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.fade;
+    }
+}

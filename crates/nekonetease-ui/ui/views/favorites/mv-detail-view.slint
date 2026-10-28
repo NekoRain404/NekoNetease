@@ -1,0 +1,551 @@
+import { Theme } from "../../theme.slint";
+import { Favorites } from "../../globals/curated.slint";
+import { MvDetail } from "../../globals/mv-detail.slint";
+import { MvPlayer } from "../../globals/mv-player.slint";
+import { Comments } from "../../globals/comments.slint";
+import { PopupHighlight } from "../../globals/shell.slint";
+import { CommentsView } from "../comments/comments-view.slint";
+import { MvSimilarRail } from "mv-similar-rail.slint";
+import { MenuItem } from "../../components/context-menu.slint";
+import { IconButton } from "../../components/icon-button.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+import { MetaChip } from "../../components/meta-chip.slint";
+import { PillOverflowMenu } from "../../components/pill-overflow-menu.slint";
+import { SliderTrack } from "../../components/slider-track.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+
+// The volume control, kept as one component so the transport can read whether its thumb is held:
+// an id declared inside an `if` is unreadable from outside it. Compact still mounts the root, at
+// zero width, because the transport's hover and idle gates name it unconditionally.
+component MvVolume inherits Rectangle {
+    in property <bool> compact: false;
+    in property <float> value;
+    in property <bool> slider-enabled: true;
+    callback changed(float);
+
+    out property <bool> active: slider.has-hover || slider.pressed;
+
+    width: root.compact ? 0px : 100px;
+    height: 24px;
+    visible: !root.compact;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: Theme.pad-xs;
+        alignment: center;
+
+        MaterialIcon {
+            name: root.value <= 0 ? "volume_off" : "volume_up";
+            icon-size: 18px;
+            icon-color: Theme.subtext0;
+        }
+
+        slider := SliderTrack {
+            width: 78px;
+            value: root.value;
+            is-disabled: !root.slider-enabled;
+            seam-mask-color: Theme.crust;
+            track-color: Theme.surface2;
+            fill-color: Theme.accent;
+            changed(v) => { root.changed(v); }
+        }
+    }
+}
+
+// One music video as a page: the video inline at the top, its facts and actions under it, and the
+// thread below. It replaces the artist detail that listed it; `MvPlayer.open` says whether a stream
+// is loaded, so the page also serves as the surface after the fullscreen overlay hands back.
+export component MvDetailView inherits Rectangle {
+    background: Theme.base;
+
+    // The stage keeps its 16:9 shape inside whichever axis runs out first, so a tall window grows
+    // it no wider than the panel and a narrow one leaves the comments their room.
+    private property <length> stage-h: min(
+        min(root.height * 0.36, (root.width - 2 * Theme.pad-lg) * 9 / 16),
+        460px,
+    );
+    private property <length> stage-w: root.stage-h * 16 / 9;
+
+    // While a stream is loaded the controls fade back to the picture. Only playing fades them: a
+    // paused video keeps the bar, which is the state a viewer is about to act in.
+    private property <bool> chrome-visible: true;
+    private property <int> idle-ticks: 10;
+    // The quality menu is a `PopupWindow`, so the pointer leaves the trigger while choosing.
+    private property <bool> menu-open: PopupHighlight.id == "mv-page-quality";
+    private property <bool> chrome-hovered: play-btn.has-hover || fullscreen-btn.has-hover
+        || quality-menu.hovered || timeline.has-hover || volume.active;
+
+    public function wake() {
+        root.chrome-visible = true;
+        root.idle-ticks = 10;
+    }
+
+    Timer {
+        interval: 250ms;
+        running: root.chrome-visible && MvPlayer.playing && !root.chrome-hovered
+            && !root.menu-open && !timeline.pressed;
+        triggered => {
+            if (root.idle-ticks > 0) {
+                root.idle-ticks -= 1;
+            }
+            if (root.idle-ticks == 0) {
+                root.chrome-visible = false;
+            }
+        }
+    }
+
+    VerticalLayout {
+        // No bottom padding: the thread owns its own composer inset and fills to the panel edge.
+        padding-left: Theme.pad-lg;
+        padding-right: Theme.pad-lg;
+        padding-top: Theme.pad-md;
+        spacing: Theme.pad-md;
+
+        HorizontalLayout {
+            height: 36px;
+            spacing: Theme.pad-sm;
+
+            IconButton {
+                icon: "arrow_back";
+                tooltip-text: @tr("Back");
+                diameter: 32px;
+                icon-size: 20px;
+                clicked => { MvDetail.close(); }
+            }
+
+            Text {
+                text: @tr("Music video");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                font-weight: 600;
+                letter-spacing: 0.4px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            stage := Rectangle {
+                width: root.stage-w;
+                height: root.stage-h;
+                background: Theme.crust;
+                clip: true;
+
+                // Poster while no frame has arrived; the frame replaces it in place rather than
+                // leaving the stage empty during the lookup and the first decode.
+                if !MvPlayer.has-frame: Image {
+                    width: 100%;
+                    height: 100%;
+                    source: Favorites.request-album-cover(
+                        MvDetail.artwork-path, Favorites.album-covers-generation,
+                    );
+                    image-fit: cover;
+                    opacity: 0.55;
+                }
+
+                if MvPlayer.has-frame: Image {
+                    width: 100%;
+                    height: 100%;
+                    source: MvPlayer.frame;
+                    image-fit: contain;
+                }
+
+                if MvPlayer.error != "": VerticalLayout {
+                    alignment: center;
+                    spacing: Theme.pad-sm;
+
+                    Text {
+                        text: @tr("This video could not be played");
+                        color: Theme.text;
+                        font-size: Theme.font-size-lg;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: MvPlayer.error;
+                        color: Theme.overlay1;
+                        font-size: Theme.font-size-sm;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                if MvDetail.resolving || (MvPlayer.open && MvPlayer.loading): VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: @tr("Loading video…");
+                        color: Theme.overlay1;
+                        font-size: Theme.font-size-md;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                // The picture itself is the play control before a stream exists, and pause/resume
+                // once one does. Clicks on the bar and the glyph are later siblings.
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    moved => { root.wake(); }
+                    clicked => {
+                        root.wake();
+                        if MvPlayer.open {
+                            MvPlayer.toggle-play();
+                        } else if (MvPlayer.error == "" && !MvDetail.resolving) {
+                            MvDetail.play();
+                        }
+                    }
+                }
+
+                // Transport, overlaid on the bottom of the picture. Opaque because `SliderTrack`'s
+                // seam mask has to name one surface, and the picture shows above it.
+                Rectangle {
+                    y: parent.height - self.height;
+                    width: 100%;
+                    height: 56px;
+                    background: Theme.crust;
+                    opacity: root.chrome-visible ? 1.0 : 0.0;
+                    animate opacity { duration: Theme.dur-med; easing: ease-in-out; }
+
+                    HorizontalLayout {
+                        padding-left: Theme.pad-sm;
+                        padding-right: Theme.pad-sm;
+                        spacing: Theme.pad-xs;
+                        alignment: center;
+
+                        play-btn := IconButton {
+                            icon: MvPlayer.playing ? "pause" : "play_arrow";
+                            filled: MvPlayer.playing;
+                            diameter: 34px;
+                            icon-size: 22px;
+                            button-enabled: MvPlayer.open || !MvDetail.resolving;
+                            tooltip-text: MvPlayer.playing ? @tr("Pause") : @tr("Play");
+                            clicked => {
+                                root.wake();
+                                if MvPlayer.open {
+                                    MvPlayer.toggle-play();
+                                } else if (!MvDetail.resolving && MvPlayer.error == "") {
+                                    MvDetail.play();
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: Theme.format-duration(timeline.dragging
+                                ? round(timeline.drag-value * MvPlayer.duration-ms)
+                                : MvPlayer.position-ms);
+                            color: Theme.subtext0;
+                            font-size: Theme.font-size-sm;
+                            min-width: 38px;
+                            height: 24px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+
+                        timeline := SliderTrack {
+                            horizontal-stretch: 1;
+                            min-width: 160px;
+                            height: 24px;
+                            value: root.progress();
+                            is-disabled: !root.chrome-visible || MvPlayer.duration-ms <= 0;
+                            seam-mask-color: Theme.crust;
+                            fill-color: Theme.accent;
+                            // The default `surface1` nearly matches `crust`, so an unfilled
+                            // timeline painted nothing between the two readouts.
+                            track-color: Theme.surface2;
+                            committed(v) => {
+                                if (MvPlayer.duration-ms > 0) {
+                                    MvPlayer.seek(round(v * MvPlayer.duration-ms));
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: Theme.format-duration(MvPlayer.duration-ms);
+                            color: Theme.subtext0;
+                            font-size: Theme.font-size-sm;
+                            min-width: 38px;
+                            height: 24px;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                        }
+
+                        // The volume pair drops out on a narrow stage; the keyboard still sets it
+                        // and the page keeps the tier and the window control.
+                        volume := MvVolume {
+                            compact: root.stage-w < 520px;
+                            value: MvPlayer.volume / 100.0;
+                            slider-enabled: root.chrome-visible;
+                            changed(v) => { MvPlayer.set-volume(round(v * 100)); }
+                        }
+
+                        quality-menu := PillOverflowMenu {
+                            menu-id: "mv-page-quality";
+                            label: root.quality-label();
+                            icon: "";
+                            min-menu-width: 120px;
+                            tooltip-text: "";
+
+                            MenuItem {
+                                label: "1080p";
+                                checked: MvPlayer.quality == 1080;
+                                clicked => {
+                                    root.wake();
+                                    MvPlayer.set-quality(1080);
+                                }
+                            }
+                            MenuItem {
+                                label: "720p";
+                                checked: MvPlayer.quality == 720;
+                                clicked => {
+                                    root.wake();
+                                    MvPlayer.set-quality(720);
+                                }
+                            }
+                            MenuItem {
+                                label: "480p";
+                                checked: MvPlayer.quality == 480;
+                                clicked => {
+                                    root.wake();
+                                    MvPlayer.set-quality(480);
+                                }
+                            }
+                            MenuItem {
+                                label: "240p";
+                                checked: MvPlayer.quality == 240;
+                                clicked => {
+                                    root.wake();
+                                    MvPlayer.set-quality(240);
+                                }
+                            }
+                        }
+
+                        fullscreen-btn := IconButton {
+                            icon: MvPlayer.fullscreen ? "minimize" : "crop_square";
+                            diameter: 32px;
+                            icon-size: 18px;
+                            idle-fg: Theme.subtext0;
+                            hover-fg: Theme.text;
+                            tooltip-text: MvPlayer.fullscreen ? @tr("Exit full screen") : @tr("Full screen");
+                            clicked => {
+                                root.wake();
+                                MvPlayer.set-fullscreen(!MvPlayer.fullscreen);
+                            }
+                        }
+                    }
+                }
+
+                // Above the faded bar so a press that wakes the chrome cannot also land on a
+                // control the viewer cannot see.
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    enabled: !root.chrome-visible;
+                    moved => { root.wake(); }
+                    clicked => { root.wake(); }
+                }
+
+                // The one control that outlives the fade: paused or not started, the way back into
+                // the video is the glyph under the pointer.
+                if (!MvPlayer.playing && MvPlayer.error == "" && !MvDetail.resolving
+                    && !(MvPlayer.open && MvPlayer.loading)): IconButton {
+                    icon: "play_arrow";
+                    diameter: 64px;
+                    icon-size: 40px;
+                    idle-bg: Theme.crust.transparentize(0.25);
+                    hover-bg: Theme.crust;
+                    idle-fg: Theme.text;
+                    hover-fg: Theme.accent;
+                    tooltip-text: @tr("Play");
+                    clicked => {
+                        root.wake();
+                        if MvPlayer.open {
+                            MvPlayer.toggle-play();
+                        } else {
+                            MvDetail.play();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Facts. The MV chip states the kind beside a name that already came from one, which is
+        // how a video is told from an album in a search history entry.
+        VerticalLayout {
+            spacing: Theme.pad-xs;
+
+            if MvDetail.loading: Text {
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-md;
+            }
+
+            if !MvDetail.loading && MvDetail.error != "": HorizontalLayout {
+                spacing: Theme.pad-sm;
+
+                Text {
+                    text: MvDetail.error;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-row;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                ActionPill {
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        clicked => { MvDetail.retry(); }
+                    }
+                }
+            }
+
+            if !MvDetail.loading && MvDetail.error == "": HorizontalLayout {
+                spacing: Theme.pad-sm;
+
+                MetaChip {
+                    text: "MV";
+                    fill: Theme.accent.with-alpha(0.15);
+                    label-color: Theme.accent;
+                }
+
+                Text {
+                    text: MvDetail.title;
+                    color: Theme.text;
+                    font-size: Theme.hero-title-size;
+                    font-weight: 600;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: MvDetail.artist;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-md;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+
+            if !MvDetail.loading && MvDetail.error == "" && MvDetail.description != "": Text {
+                text: MvDetail.description;
+                color: Theme.subtext0;
+                font-size: Theme.font-size-row;
+                overflow: elide;
+            }
+
+            if !MvDetail.loading && MvDetail.error == "": HorizontalLayout {
+                spacing: Theme.pad-md;
+
+                if MvDetail.publish-date != "": Text {
+                    text: MvDetail.publish-date;
+                    color: Theme.overlay1;
+                    font-size: Theme.font-size-sm;
+                }
+                if MvDetail.duration != "": Text {
+                    text: MvDetail.duration;
+                    color: Theme.overlay1;
+                    font-size: Theme.font-size-sm;
+                }
+                if MvDetail.play-count != "": Text {
+                    text: @tr("Plays: {}", MvDetail.play-count);
+                    color: Theme.overlay1;
+                    font-size: Theme.font-size-sm;
+                }
+            }
+
+            if !MvDetail.loading && MvDetail.error == "": HorizontalLayout {
+                spacing: Theme.pad-sm;
+
+                ActionPill {
+                    PillButton {
+                        icon: "thumb_up";
+                        icon-filled: MvDetail.liked;
+                        active: MvDetail.liked;
+                        text: "\{MvDetail.like-count}";
+                        enabled: MvDetail.can-act && !MvDetail.acting;
+                        tooltip-text: @tr("Like");
+                        clicked => { MvDetail.toggle-like(); }
+                    }
+                }
+
+                ActionPill {
+                    PillButton {
+                        icon: "star";
+                        icon-filled: MvDetail.collected;
+                        active: MvDetail.collected;
+                        text: "\{MvDetail.collect-count}";
+                        enabled: MvDetail.can-act && !MvDetail.acting;
+                        tooltip-text: @tr("Collect");
+                        clicked => { MvDetail.toggle-collect(); }
+                    }
+                }
+
+                ActionPill {
+                    PillButton {
+                        icon: "link";
+                        text: "\{MvDetail.share-count}";
+                        tooltip-text: @tr("Share");
+                        clicked => { MvDetail.share(); }
+                    }
+                }
+
+                ActionPill {
+                    PillButton {
+                        icon: "download";
+                        text: @tr("Download");
+                        tooltip-text: @tr("Save to Downloads");
+                        clicked => { MvDetail.download(); }
+                    }
+                }
+            }
+        }
+
+        // The thread shares the page with the video, so reading a comment never leaves the MV.
+        // The layout stretches rather than the view inside it: `CommentsView` is sized to its
+        // host, and a view given a percentage height as a layout *child* is the unbounded-layout
+        // path. The rail takes width rather than height, which is what a page this tall has none
+        // of to spare.
+        HorizontalLayout {
+            vertical-stretch: 1;
+            min-height: 160px;
+            spacing: Theme.pad-md;
+
+            Rectangle {
+                horizontal-stretch: 1;
+                clip: true;
+                background: Theme.base;
+
+                if Comments.open: CommentsView {
+                    width: 100%;
+                    height: 100%;
+                    embedded: true;
+                }
+            }
+
+            // Below this the rail's 160 px would come out of the thread's column rather than
+            // out of slack, and the page is still usable without it.
+            if root.width >= 640px: MvSimilarRail {
+                mvs: MvDetail.similar-mvs;
+                loading: MvDetail.similar-loading;
+                error: MvDetail.similar-error;
+                open(id) => { MvDetail.open-similar(id); }
+                retry() => { MvDetail.retry-similar(); }
+            }
+        }
+    }
+
+    pure function progress() -> float {
+        if MvPlayer.duration-ms <= 0 {
+            return 0.0;
+        }
+        return clamp(MvPlayer.position-ms * 1.0 / MvPlayer.duration-ms, 0.0, 1.0);
+    }
+
+    // The tier labels are the endpoints' own `r` numbers, so they are the same string in every
+    // locale and never enter a catalogue.
+    pure function quality-label() -> string {
+        return "\{MvPlayer.quality}p";
+    }
+}

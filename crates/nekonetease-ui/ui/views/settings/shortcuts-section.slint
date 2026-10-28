@@ -1,0 +1,101 @@
+import { SettingsPage } from "../../globals/settings-page.slint";
+import { SectionCard } from "../../components/settings/section-card.slint";
+import { SectionDivider } from "../../components/settings/section-divider.slint";
+import { SettingRow } from "../../components/settings/setting-row.slint";
+
+// A reference sheet, not a setting: every row restates a binding that
+// `layout/shortcut-scope.slint` spells as a literal, so a new binding is added in both files. A
+// shared map would need the handler reading its keys out of a global, which is more machinery than
+// the sheet is worth.
+export component ShortcutsSection inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    in property <string> tab-name;
+
+    property <string> card-title: @tr("Keyboard shortcuts");
+
+    // Declared once each: the filter haystack and the rows both read them, so a reworded action
+    // can't desync from what search matches on.
+    property <string> play: @tr("Play or pause");
+    property <string> seek: @tr("Seek backward or forward; hold Shift to seek 30 seconds");
+    property <string> volume: @tr("Turn the volume up or down; hold Ctrl for 1% steps");
+    property <string> seek-tenth: @tr("Seek to a tenth of the track");
+    property <string> track: @tr("Next or previous track");
+    property <string> mute: @tr("Mute or unmute");
+    property <string> favorite: @tr("Favorite");
+    property <string> shuffle: @tr("Shuffle");
+    property <string> repeat: @tr("Repeat");
+    property <string> now-playing: @tr("Now Playing");
+    property <string> queue: @tr("Queue");
+    property <string> sidebar: @tr("Toggle the sidebar");
+    property <string> settings: @tr("Open Settings");
+    property <string> maximize: @tr("Maximize");
+    property <string> escape: @tr("Close");
+
+    // One haystack for the whole card: this is reference material, so a hit on any row reveals the
+    // list rather than leaving a lone line of it.
+    property <string> haystack:
+        root.play + " Space"
+        + root.seek + " Left Right Shift"
+        + root.volume + " Up Down Ctrl"
+        + root.seek-tenth + " 0-9"
+        + root.track + " N P"
+        + root.mute + " M"
+        + root.favorite + " L"
+        + root.shuffle + " S"
+        + root.repeat + " R"
+        + root.now-playing + " F"
+        + root.queue + " Q"
+        + root.sidebar + " Ctrl Cmd B"
+        + root.settings + " Ctrl Cmd comma"
+        + root.maximize + " F11"
+        + root.escape + " Esc";
+
+    pure function row-visible(label: string, desc: string) -> bool {
+        return SettingsPage.row-visible(root.tab-name, root.card-title,
+                                        label + " " + desc,
+                                        SettingsPage.search-query);
+    }
+
+    property <bool> show-reference: row-visible(root.card-title, root.haystack);
+
+    out property <bool> has-matches: root.show-reference;
+
+    VerticalLayout {
+        if root.show-reference: SectionCard {
+            title: root.card-title;
+
+            SettingRow { icon: "play_arrow"; label: "Space"; description: root.play; }
+            SectionDivider {}
+            SettingRow { icon: "speed"; label: "Left / Right"; description: root.seek; }
+            SectionDivider {}
+            SettingRow { icon: "volume_up"; label: "Up / Down"; description: root.volume; }
+            SectionDivider {}
+            SettingRow { icon: "restart_alt"; label: "0-9"; description: root.seek-tenth; }
+            SectionDivider {}
+            SettingRow { icon: "swap_horiz"; label: "N / P"; description: root.track; }
+            SectionDivider {}
+            SettingRow { icon: "volume_off"; label: "M"; description: root.mute; }
+            SectionDivider {}
+            SettingRow { icon: "favorite"; label: "L"; description: root.favorite; }
+            SectionDivider {}
+            SettingRow { icon: "shuffle"; label: "S"; description: root.shuffle; }
+            SectionDivider {}
+            SettingRow { icon: "repeat"; label: "R"; description: root.repeat; }
+            SectionDivider {}
+            SettingRow { icon: "play_circle"; label: "F"; description: root.now-playing; }
+            SectionDivider {}
+            SettingRow { icon: "queue_music"; label: "Q"; description: root.queue; }
+            SectionDivider {}
+            SettingRow { icon: "dock_to_left"; label: "Ctrl / Cmd + B"; description: root.sidebar; }
+            SectionDivider {}
+            SettingRow { icon: "settings"; label: "Ctrl / Cmd + ,"; description: root.settings; }
+            SectionDivider {}
+            SettingRow { icon: "crop_square"; label: "F11"; description: root.maximize; }
+            SectionDivider {}
+            SettingRow { icon: "close"; label: "Esc"; description: root.escape; }
+        }
+    }
+}

@@ -1,0 +1,33 @@
+//! Long-running background tasks spawned at startup.
+//!
+//! Each task module exposes a `pub fn spawn(spawner: &TaskSpawner, …)` that
+//! takes the unified [`spawner::TaskSpawner`] (`task_tracker` + shutdown token
+//! bundle) plus whatever extra slices it needs from `AppState`. Most loops
+//! live in this directory directly; a handful still delegate into
+//! `player/` for state-machine-coupled work.
+
+pub mod artwork_renormalize;
+pub mod artwork_restore;
+pub mod artwork_sweep;
+pub mod audio_health;
+pub mod cloud_cache_sweep;
+pub mod device_volume;
+pub mod file_event_processor;
+pub mod heap_trim;
+pub mod lyrics_cache;
+pub mod material_you;
+pub mod netease_listening;
+pub mod one_shot;
+pub mod play_count_flusher;
+pub mod playback_monitor;
+pub mod queue_prune;
+pub mod rating_import;
+pub mod rating_writeback;
+pub mod resume_watching;
+pub mod retroactive_hash;
+pub mod rss_sampler;
+pub mod spawner;
+pub mod tag_backfill;
+pub mod updater_daily;
+
+pub use spawner::TaskSpawner;

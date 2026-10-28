@@ -1,0 +1,1287 @@
+use crate::database::DbPool;
+use crate::database::queries;
+#[allow(clippy::wildcard_imports)]
+use crate::database::queries::fixtures::*;
+use nekonetease_core::entities::track::TrackMeta;
+use nekonetease_core::error::AppError;
+
+async fn seed_db() -> Result<DbPool, AppError> {
+    let db = DbPool::test_pool().await?;
+    queries::folder::insert_folder(&db, "/music", true).await?;
+    insert_test_track(&db, "/music/alpha.mp3", "Alpha", "Zeta Artist", "B Album", "Pop").await?;
+    insert_test_track(&db, "/music/beta.mp3", "Beta", "Alpha Artist", "A Album", "Rock").await?;
+    insert_test_track(&db, "/music/gamma.mp3", "Gamma", "Alpha Artist", "A Album", "Rock").await?;
+    Ok(db)
+}
+
+/// [`seed_db`]'s three tracks, inserted **back-to-front** so that rowid order
+/// is the reverse of `sort_key` order. Identical in every other respect.
+///
+/// The two ordering pins below need it, and neither works without it.
+/// `seed_db` inserts already sorted, so there rowid order and `sort_key` order
+/// are the same sequence and an assertion over it is satisfied by a bare table
+/// scan — the `ORDER BY` can go missing with nothing failing, which is exactly
+/// what happened to the test this one replaced.
+///
+/// `seed_db` itself can't just be reversed:
+/// [`the_hero_mosaic_leads_with_the_covers_the_most_played_tab_shows`] reads its
+/// insertion order as the rowid order its tiebreakers have to *beat*, so
+/// flipping it would hand that test the answer it exists to prove.
+async fn seed_db_inserted_backwards() -> Result<DbPool, AppError> {
+    let db = DbPool::test_pool().await?;
+    queries::folder::insert_folder(&db, "/music", true).await?;
+    insert_test_track(&db, "/music/gamma.mp3", "Gamma", "Alpha Artist", "A Album", "Rock").await?;
+    insert_test_track(&db, "/music/beta.mp3", "Beta", "Alpha Artist", "A Album", "Rock").await?;
+    insert_test_track(&db, "/music/alpha.mp3", "Alpha", "Zeta Artist", "B Album", "Pop").await?;
+    Ok(db)
+}
+
+/// The whole-table fetches hand back one fixed order, and both retained-row
+/// views document it as the order they permute *from*. It stopped being a
+/// default when `track_list_order_by`'s other arms went — nothing asks for
+/// anything else — so this is now the only ordering claim SQL makes about a
+/// track list, and the one worth pinning.
+///
+/// Seeded backwards, because the ordinary fixture cannot pin it — see
+/// [`seed_db_inserted_backwards`].
+#[tokio::test]
+async fn a_whole_table_fetch_comes_back_in_sort_key_order() -> Result<(), AppError> {
+    let db = seed_db_inserted_backwards().await?;
+    let tracks = queries::track::get_all_tracks(&db).await?;
+    let titles: Vec<&str> = tracks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Alpha", "Beta", "Gamma"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_tracks_by_album() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let album_id: i64 = sqlx::query_scalar("SELECT id FROM albums WHERE name = 'A Album'")
+        .fetch_one(db.read())
+        .await?;
+    let tracks = queries::track::get_tracks_by_album(&db, album_id).await?;
+    assert_eq!(tracks.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_tracks_by_artist() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let artist_id: i64 = sqlx::query_scalar("SELECT id FROM artists WHERE name = 'Alpha Artist'")
+        .fetch_one(db.read())
+        .await?;
+    let tracks = queries::track::get_tracks_by_artist(&db, artist_id).await?;
+    assert_eq!(tracks.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_tracks_by_genre() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let genre_id: i64 = sqlx::query_scalar("SELECT id FROM genres WHERE name = 'Rock'")
+        .fetch_one(db.read())
+        .await?;
+    let tracks = queries::track::get_tracks_by_genre(&db, genre_id).await?;
+    assert_eq!(tracks.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_track_by_id_happy_path() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1").fetch_one(db.read()).await?;
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert_eq!(t.id, id);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_track_by_id_not_found() -> Result<(), AppError> {
+    let db = DbPool::test_pool().await?;
+    let result = queries::track::get_track_by_id(&db, 99999).await;
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_tracks_by_ids_preserves_order() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    let ids: Vec<i64> = vec![all[2].id, all[0].id, all[1].id];
+    let result = queries::track::get_tracks_by_ids(&db, &ids).await?;
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].id, all[2].id);
+    assert_eq!(result[1].id, all[0].id);
+    assert_eq!(result[2].id, all[1].id);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_tracks_by_ids_skips_missing() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    let ids = vec![all[0].id, 99999];
+    let result = queries::track::get_tracks_by_ids(&db, &ids).await?;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].id, all[0].id);
+    Ok(())
+}
+
+/// `TrackMeta` is the one of `entities::track`'s five hand-maintained `SELECT` lists that no
+/// test selects, and a list that has drifted from its `FromRow` struct fails at fetch time
+/// with nothing at compile time to catch it. The whole struct is compared rather than the
+/// call: `Ok` says the columns exist, not that the fields received them.
+#[tokio::test]
+async fn the_chip_row_projection_reads_every_column_it_declares() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Alpha'")
+        .fetch_one(db.read())
+        .await?;
+
+    let meta = queries::track::get_track_meta(&db, id).await?;
+
+    assert_eq!(
+        meta,
+        Some(TrackMeta {
+            id,
+            codec: Some("Mpeg".to_owned()),
+            bitrate: Some(320),
+            sample_rate: Some(44_100),
+            bit_depth: Some(16),
+            channels: Some(2),
+            year: Some(2024),
+            genre: Some("Pop".to_owned()),
+        })
+    );
+    Ok(())
+}
+
+/// A miss is `None` and not an error, which is what lets the chip row paint empty where its
+/// `get_track_by_id` neighbour raises for the same input. The return type holds that much on
+/// its own; what this adds is that the predicate selects by the id it was handed, since a
+/// broken one hands back the first row in the table and reads as a hit.
+#[tokio::test]
+async fn a_missing_id_has_no_chip_row() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    assert_eq!(queries::track::get_track_meta(&db, 99999).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_track_file_path_happy_path() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Beta'")
+        .fetch_one(db.read())
+        .await?;
+    assert_eq!(
+        queries::track::get_track_file_path(&db, id).await?.as_deref(),
+        Some("/music/beta.mp3")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_track_file_path_not_found() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    assert_eq!(queries::track::get_track_file_path(&db, 99999).await?, None);
+    Ok(())
+}
+
+/// The diagnostics bundle reports this as library shape, so a reader treats it as fact about
+/// the user's install. Both partitions: an empty library reads zero rather than failing.
+#[tokio::test]
+async fn count_tracks_counts_the_whole_table() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    assert_eq!(queries::track::count_tracks(&db).await?, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn count_tracks_on_an_empty_library_is_zero() -> Result<(), AppError> {
+    let db = DbPool::test_pool().await?;
+    assert_eq!(queries::track::count_tracks(&db).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_play_count_increments() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1").fetch_one(db.read()).await?;
+
+    queries::track::update_play_count(&db, id).await?;
+    queries::track::update_play_count(&db, id).await?;
+
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert_eq!(t.play_count, 2);
+    assert!(t.last_played.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_skip_count_increments() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1").fetch_one(db.read()).await?;
+
+    queries::track::update_skip_count(&db, id).await?;
+
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert_eq!(t.skip_count, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_last_position() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1").fetch_one(db.read()).await?;
+
+    queries::track::update_last_position(&db, id, 45_000).await?;
+
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert_eq!(t.last_position, 45_000);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_tracks_in_directory_direct_only() -> Result<(), AppError> {
+    let db = DbPool::test_pool().await?;
+    // Use the platform's native separator — `get_tracks_in_directory`
+    // builds its LIKE pattern with `MAIN_SEPARATOR`, so Unix-style `/`
+    // hardcoded test paths wouldn't match on Windows.
+    let sep = std::path::MAIN_SEPARATOR_STR;
+    let dir = format!("{sep}music");
+    let direct = format!("{dir}{sep}song.mp3");
+    let nested = format!("{dir}{sep}sub{sep}nested.mp3");
+
+    queries::folder::insert_folder(&db, &dir, true).await?;
+    insert_test_track(&db, &direct, "Direct", "A", "B", "C").await?;
+    insert_test_track(&db, &nested, "Nested", "A", "B", "C").await?;
+
+    let tracks = queries::track::get_tracks_in_directory(&db, &dir).await?;
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].title, "Direct");
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_track_ids_by_paths() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let paths = vec![
+        "/music/alpha.mp3".to_owned(),
+        "/music/beta.mp3".to_owned(),
+        "/nonexistent.mp3".to_owned(),
+    ];
+    let map = queries::track::get_track_ids_by_paths(&db, &paths).await?;
+    assert_eq!(map.len(), 2);
+    assert!(map.contains_key("/music/alpha.mp3"));
+    assert!(map.contains_key("/music/beta.mp3"));
+    assert!(!map.contains_key("/nonexistent.mp3"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_track_ids_by_hashes() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    // `make_test_metadata` sets file_hash = blake3(title), so each seeded
+    // track's hash is deterministic from its title.
+    let alpha = blake3::hash(b"Alpha").to_hex().to_string();
+    let beta = blake3::hash(b"Beta").to_hex().to_string();
+    let unknown = blake3::hash(b"Nope").to_hex().to_string();
+
+    let map = queries::track::get_track_ids_by_hashes(
+        &db,
+        &[alpha.clone(), beta.clone(), unknown.clone()],
+    )
+    .await?;
+
+    assert_eq!(map.len(), 2);
+    assert!(map.contains_key(&alpha));
+    assert!(map.contains_key(&beta));
+    assert!(!map.contains_key(&unknown));
+
+    // The alpha hash resolves to the same id as the alpha path.
+    let by_path =
+        queries::track::get_track_ids_by_paths(&db, &["/music/alpha.mp3".to_owned()]).await?;
+    assert_eq!(map.get(&alpha), by_path.get("/music/alpha.mp3"));
+    Ok(())
+}
+
+// --- Duplicate detection tests ---
+
+#[tokio::test]
+async fn get_duplicate_tracks_returns_groups() -> Result<(), AppError> {
+    let db = DbPool::test_pool().await?;
+    queries::folder::insert_folder(&db, "/music", true).await?;
+
+    // Insert two tracks with the same hash (simulating duplicate files)
+    let id1 = insert_test_track(&db, "/music/copy1.mp3", "Song", "Art", "Alb", "Rock").await?;
+    let id2 = insert_test_track(&db, "/music/copy2.mp3", "Song", "Art", "Alb", "Rock").await?;
+
+    // Set both to the same hash
+    let shared_hash = "d".repeat(64);
+    sqlx::query("UPDATE tracks SET file_hash = ? WHERE id IN (?, ?)")
+        .bind(&shared_hash)
+        .bind(id1)
+        .bind(id2)
+        .execute(db.write())
+        .await?;
+
+    let groups = queries::track::get_duplicate_tracks(&db).await?;
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_duplicate_tracks_empty_when_no_dupes() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    // Each track from seed_db has a unique hash (default from make_test_metadata)
+    let groups = queries::track::get_duplicate_tracks(&db).await?;
+    assert_eq!(groups.len(), 0);
+    Ok(())
+}
+
+// --- Batch hash update tests ---
+
+#[tokio::test]
+async fn batch_update_hashes_sets_values() -> Result<(), AppError> {
+    let db = DbPool::test_pool().await?;
+    queries::folder::insert_folder(&db, "/music", true).await?;
+    let id = insert_test_track(&db, "/music/song.mp3", "Song", "Art", "Alb", "Rock").await?;
+
+    // Clear the hash to simulate an old track
+    sqlx::query("UPDATE tracks SET file_hash = NULL WHERE id = ?")
+        .bind(id)
+        .execute(db.write())
+        .await?;
+
+    let new_hash = "e".repeat(64);
+    let mtime = Some("2025-01-01T00:00:00+00:00".to_owned());
+    queries::track::batch_update_hashes(&db, &[(id, new_hash.clone(), mtime.clone())]).await?;
+
+    let row: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT file_hash, date_modified FROM tracks WHERE id = ?")
+            .bind(id)
+            .fetch_one(db.read())
+            .await?;
+    assert_eq!(row.0.as_deref(), Some(new_hash.as_str()));
+    assert_eq!(row.1, mtime);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_unhashed_track_paths_finds_null_hashes() -> Result<(), AppError> {
+    let db = DbPool::test_pool().await?;
+    queries::folder::insert_folder(&db, "/music", true).await?;
+    let id = insert_test_track(&db, "/music/song.mp3", "Song", "Art", "Alb", "Rock").await?;
+
+    // Clear the hash
+    sqlx::query("UPDATE tracks SET file_hash = NULL WHERE id = ?")
+        .bind(id)
+        .execute(db.write())
+        .await?;
+
+    let unhashed = queries::track::get_unhashed_track_paths(&db).await?;
+    assert_eq!(unhashed.len(), 1);
+    assert_eq!(unhashed[0].0, id);
+    assert_eq!(unhashed[0].1, "/music/song.mp3");
+    Ok(())
+}
+
+// --- Favorites tests ---
+
+#[tokio::test]
+async fn set_favorite_flips_flag() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1").fetch_one(db.read()).await?;
+
+    // Initially not favorite
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert!(!t.is_favorite);
+
+    // Set to favorite
+    queries::track::set_favorite(&db, &[id], true).await?;
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert!(t.is_favorite);
+
+    // Set back to not favorite
+    queries::track::set_favorite(&db, &[id], false).await?;
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert!(!t.is_favorite);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_favorite_tracks_returns_only_favorites() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+
+    // Favorite the first track
+    queries::track::set_favorite(&db, &[all[0].id], true).await?;
+
+    let favs = queries::track::get_favorite_tracks_for_list(&db).await?;
+    assert_eq!(favs.len(), 1);
+    assert_eq!(favs[0].id, all[0].id);
+    assert!(favs[0].is_favorite);
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_favorites_fetch_shares_the_whole_table_order() -> Result<(), AppError> {
+    // The Songs tab hands its own permutation to `store_in_order`, computed
+    // before the section guards let it store — so the two orders only line up
+    // because this fetch and `get_all_tracks_for_list` share one clause.
+    // Backwards-seeded for the reason the whole-table pin above is.
+    let db = seed_db_inserted_backwards().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    let ids: Vec<i64> = all.iter().map(|t| t.id).collect();
+    queries::track::set_favorite(&db, &ids, true).await?;
+
+    let favs = queries::track::get_favorite_tracks_for_list(&db).await?;
+    let titles: Vec<&str> = favs.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Alpha", "Beta", "Gamma"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_favorite_empty_ids_is_noop() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    // Should not error
+    queries::track::set_favorite(&db, &[], true).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_rating_updates_value() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1").fetch_one(db.read()).await?;
+
+    // Default rating is 0 (unrated).
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert_eq!(t.rating, 0);
+
+    queries::track::set_rating(&db, &[id], 4).await?;
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert_eq!(t.rating, 4);
+
+    // Clearing back to 0 works.
+    queries::track::set_rating(&db, &[id], 0).await?;
+    let t = queries::track::get_track_by_id(&db, id).await?;
+    assert_eq!(t.rating, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_rating_targets_only_given_ids() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    assert_eq!(all.len(), 3, "test setup: the seed's three tracks");
+
+    queries::track::set_rating(&db, &[all[0].id], 5).await?;
+
+    let rated = queries::track::get_track_by_id(&db, all[0].id).await?;
+    assert_eq!(rated.rating, 5);
+    // Untargeted rows stay at the default 0.
+    for other in &all[1..] {
+        let t = queries::track::get_track_by_id(&db, other.id).await?;
+        assert_eq!(t.rating, 0, "id {} must be untouched", other.id);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_rating_empty_ids_is_noop() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    // Should not error.
+    queries::track::set_rating(&db, &[], 3).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_favorite_stats_orders_artwork_by_play_count() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    let ids: Vec<i64> = all.iter().map(|t| t.id).collect();
+    queries::track::set_favorite(&db, &ids, true).await?;
+
+    // Distinct artworks — first pass returns these in play_count DESC order.
+    sqlx::query(
+        "UPDATE tracks SET artwork_path = '/art/alpha.jpg', play_count = 1 WHERE title = 'Alpha'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query(
+        "UPDATE tracks SET artwork_path = '/art/beta.jpg', play_count = 9 WHERE title = 'Beta'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query(
+        "UPDATE tracks SET artwork_path = '/art/gamma.jpg', play_count = 5 WHERE title = 'Gamma'",
+    )
+    .execute(db.write())
+    .await?;
+
+    let stats = queries::track::get_favorite_stats(&db).await?;
+    assert_eq!(stats.count, 3);
+    // Distinct artworks only, ordered by play_count DESC — the SQL does *not*
+    // duplicate paths to reach 4, `compose_cover` having a layout per count.
+    assert_eq!(
+        stats.artwork_paths,
+        vec!["/art/beta.jpg".to_owned(), "/art/gamma.jpg".to_owned(), "/art/alpha.jpg".to_owned(),],
+        "artwork_paths must be the distinct set in play_count DESC order"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_favorite_stats_returns_distinct_artworks_no_duplicates() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    let ids: Vec<i64> = all.iter().map(|t| t.id).collect();
+    queries::track::set_favorite(&db, &ids, true).await?;
+
+    // All three seed tracks share one artwork_path (single-album-heavy
+    // library). The SQL must return that one distinct artwork *once*, not
+    // duplicate it to fill 4 slots — `compose_cover` draws a lone cover
+    // full-bleed rather than tiling it four times.
+    sqlx::query(
+        "UPDATE tracks SET artwork_path = '/art/single.jpg' WHERE title IN ('Alpha', 'Beta', 'Gamma')",
+    )
+    .execute(db.write())
+    .await?;
+
+    let stats = queries::track::get_favorite_stats(&db).await?;
+    assert_eq!(stats.count, 3);
+    assert_eq!(
+        stats.artwork_paths,
+        vec!["/art/single.jpg".to_owned()],
+        "only the one distinct artwork is returned; the mosaic component handles padding"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_favorite_stats_empty_when_favorites_have_no_artwork() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    let ids: Vec<i64> = all.iter().map(|t| t.id).collect();
+    queries::track::set_favorite(&db, &ids, true).await?;
+
+    // Seed leaves artwork_path as NULL — favorites exist but none have
+    // covers. The mosaic should render no tiles so the FavoritesView's
+    // outer `favorite_border` placeholder is what the user sees.
+    //
+    // One of them carries `''` instead: the scan path treats an empty
+    // artwork_path as "no cover" in the same breath as NULL
+    // (`ingest::flush_artwork_backfill`), so it is a value
+    // that reaches this table — and it must not take a slot it can't paint.
+    sqlx::query("UPDATE tracks SET artwork_path = '' WHERE title = 'Alpha'")
+        .execute(db.write())
+        .await?;
+
+    let stats = queries::track::get_favorite_stats(&db).await?;
+    assert_eq!(stats.count, 3);
+    assert!(
+        stats.artwork_paths.is_empty(),
+        "no artworks among favorites ⇒ empty list, got {:?}",
+        stats.artwork_paths
+    );
+    Ok(())
+}
+
+/// The hero mosaic and the Most Played tab are the same list seen two ways, so
+/// they have to resolve a tie the same way. The mosaic used to rank distinct
+/// covers by `MAX(play_count)` under a tiebreaker of its own, and the grid broke
+/// ties not at all — so on a tie they picked different winners, and the grid's
+/// own order could move between refreshes. Both now read `MOST_PLAYED_ORDER`.
+#[tokio::test]
+async fn the_hero_mosaic_leads_with_the_covers_the_most_played_tab_shows() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let all = queries::track::get_all_tracks(&db).await?;
+    let ids: Vec<i64> = all.iter().map(|t| t.id).collect();
+    queries::track::set_favorite(&db, &ids, true).await?;
+
+    // Alpha and Beta are level on plays and Beta was played more recently, so
+    // Beta leads. Gamma is a favorite nobody has played, carrying a cover of
+    // its own — it's what pads the mosaic once the played covers run out. Every
+    // cover here is distinct, so "first four" and "first four distinct" coincide
+    // and the assertions below can stay about ordering.
+    //
+    // Which of the pair is the recent one is the whole fixture, because both
+    // orders this has to reject put *Alpha* first. Drop the tiebreakers and
+    // `SQLite` sorts the tied pair into a temp B-tree in rowid order, i.e. the
+    // order `seed_db` inserted them. Restore the mosaic's old `MAX(date_added)
+    // DESC` and it follows insertion too — so `date_added` is written here
+    // against recency rather than left to the seed, and a fixture with Alpha as
+    // the recent one would pass against all three queries and pin nothing.
+    sqlx::query(
+        "UPDATE tracks SET artwork_path = '/art/alpha.jpg', play_count = 4, \
+         last_played = '2026-01-01T00:00:00+00:00', date_added = '2026-05-01T00:00:00+00:00' \
+         WHERE title = 'Alpha'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query(
+        "UPDATE tracks SET artwork_path = '/art/beta.jpg', play_count = 4, \
+         last_played = '2026-06-01T00:00:00+00:00', date_added = '2026-01-01T00:00:00+00:00' \
+         WHERE title = 'Beta'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query("UPDATE tracks SET artwork_path = '/art/gamma.jpg' WHERE title = 'Gamma'")
+        .execute(db.write())
+        .await?;
+
+    let grid = queries::track::get_most_played_favorites(&db).await?;
+    let titles: Vec<&str> = grid.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["Beta", "Alpha"],
+        "a tie on play_count breaks toward the track played most recently"
+    );
+
+    // Derived from the grid rather than restated, so the day the two clauses
+    // drift apart again this fails here instead of only on screen.
+    let mut expected: Vec<String> = grid.iter().filter_map(|t| t.artwork_path.clone()).collect();
+    expected.push("/art/gamma.jpg".to_owned());
+
+    let stats = queries::track::get_favorite_stats(&db).await?;
+    assert_eq!(
+        stats.artwork_paths, expected,
+        "the mosaic must lead with the Most Played tab's covers in its order, then pad from the \
+         favorites that tab excludes"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_recently_played_orders_newest_first_and_excludes_null() -> Result<(), AppError> {
+    let db = seed_db().await?;
+
+    // Distinct, lexically-ordered RFC-3339 timestamps on two tracks; leave
+    // Gamma's `last_played` NULL (never played) so it must be excluded.
+    sqlx::query(
+        "UPDATE tracks SET last_played = '2026-01-01T00:00:00+00:00' WHERE title = 'Alpha'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query("UPDATE tracks SET last_played = '2026-06-01T00:00:00+00:00' WHERE title = 'Beta'")
+        .execute(db.write())
+        .await?;
+
+    let rows = queries::track::get_recently_played(&db, 200).await?;
+    let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        vec!["Beta", "Alpha"],
+        "newest-played first; the NULL-last_played track is excluded"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_recently_played_respects_limit() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    sqlx::query(
+        "UPDATE tracks SET last_played = '2026-01-01T00:00:00+00:00' WHERE title = 'Alpha'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query("UPDATE tracks SET last_played = '2026-06-01T00:00:00+00:00' WHERE title = 'Beta'")
+        .execute(db.write())
+        .await?;
+
+    let rows = queries::track::get_recently_played(&db, 1).await?;
+    assert_eq!(rows.len(), 1, "LIMIT caps the result set");
+    assert_eq!(rows[0].title, "Beta", "the single row is the most recent");
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_most_played_orders_by_count_and_excludes_zero() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    insert_test_track(&db, "/music/delta.mp3", "Delta", "Zeta Artist", "B Album", "Pop").await?;
+
+    // Beta highest; Alpha and Delta tie on count and are separated by recency
+    // alone; Gamma left at play_count 0 (must be excluded). The tie is the part
+    // worth having — `play_count DESC` on its own leaves it to the planner, and
+    // this strip re-fetches on every `stats_changed` tick, so the cards could
+    // reshuffle with nothing about the library having moved.
+    //
+    // Alpha is the recent one on purpose. Without the tiebreakers this query
+    // walks the partial `idx_tracks_play_count` backwards, which hands back a
+    // tied group newest-rowid-first — so Delta, inserted last, is what the
+    // un-tiebroken order puts ahead, and only a fixture pointing the other way
+    // can tell the two apart.
+    sqlx::query(
+        "UPDATE tracks SET play_count = 3, last_played = '2026-06-01T00:00:00+00:00' \
+         WHERE title = 'Alpha'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query(
+        "UPDATE tracks SET play_count = 3, last_played = '2026-01-01T00:00:00+00:00' \
+         WHERE title = 'Delta'",
+    )
+    .execute(db.write())
+    .await?;
+    sqlx::query("UPDATE tracks SET play_count = 9 WHERE title = 'Beta'")
+        .execute(db.write())
+        .await?;
+
+    let rows = queries::track::get_most_played(&db).await?;
+    let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["Beta", "Alpha", "Delta"],
+        "play_count DESC, then most-recently-played first; the play_count == 0 track is \
+         excluded (no favorite filter)"
+    );
+    Ok(())
+}
+
+/// The tab this feeds is a virtualized grid, so it takes the whole set — the
+/// `LIMIT 10` it carried was sized for the ten-card carousel it replaced, and
+/// re-adding one is a ceiling the user can scroll into with nothing saying why
+/// the list stops. Seeded past that old cap so a reintroduced `LIMIT` fails here
+/// rather than only on a library large enough to notice.
+#[tokio::test]
+async fn get_most_played_is_not_capped() -> Result<(), AppError> {
+    const PLAYED: i64 = 12;
+
+    let db = seed_db().await?;
+    for n in 0..PLAYED {
+        let path = format!("/music/played-{n}.mp3");
+        insert_test_track(&db, &path, &format!("Played {n}"), "Zeta Artist", "B Album", "Pop")
+            .await?;
+        sqlx::query("UPDATE tracks SET play_count = ? WHERE file_path = ?")
+            .bind(n + 1)
+            .bind(&path)
+            .execute(db.write())
+            .await?;
+    }
+
+    let rows = queries::track::get_most_played(&db).await?;
+    assert_eq!(
+        i64::try_from(rows.len()).unwrap_or(-1),
+        PLAYED,
+        "every played track must come back — the seeded set is `play_count > 0` and the three \
+         `seed_db` rows are left at zero"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn both_most_played_queries_project_what_the_filter_searches() -> Result<(), AppError> {
+    // The cards render title + artist, so a `SELECT` that drops one of the
+    // other four still compiles and still paints correctly — it only stops
+    // the hero search bar narrowing the card grid the way it narrows the
+    // track list beside it. `FromRow` catches a missing column at run time,
+    // which is why this asserts the values rather than just the row count.
+    let db = seed_db().await?;
+    sqlx::query(
+        "UPDATE tracks SET play_count = 5, is_favorite = TRUE, album_artist = 'Various Artists' \
+         WHERE title = 'Alpha'",
+    )
+    .execute(db.write())
+    .await?;
+
+    let favorites = queries::track::get_most_played_favorites(&db).await?;
+    let all = queries::track::get_most_played(&db).await?;
+
+    for (label, rows) in [("favorites", favorites), ("all", all)] {
+        let card = rows.iter().find(|t| t.title == "Alpha");
+        assert_eq!(
+            card.map(|c| (
+                c.artist.as_deref(),
+                c.album_artist.as_deref(),
+                c.album.as_deref(),
+                c.genre.as_deref(),
+                c.year,
+            )),
+            Some((
+                Some("Zeta Artist"),
+                Some("Various Artists"),
+                Some("B Album"),
+                Some("Pop"),
+                Some(2024),
+            )),
+            "{label}: the most-played projection dropped a field the filter searches"
+        );
+    }
+    Ok(())
+}
+
+/// Recently Played's ranking spans the whole library, so its cards' hearts are only right if each
+/// row carries its own track's flag rather than the one the Favorites ranking is filtered on.
+#[tokio::test]
+async fn the_whole_library_ranking_reports_each_tracks_own_heart() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    sqlx::query("UPDATE tracks SET play_count = 2, is_favorite = TRUE WHERE title = 'Alpha'")
+        .execute(db.write())
+        .await?;
+    sqlx::query("UPDATE tracks SET play_count = 1 WHERE title = 'Beta'")
+        .execute(db.write())
+        .await?;
+
+    let rows = queries::track::get_most_played(&db).await?;
+
+    let hearts: Vec<(&str, bool)> =
+        rows.iter().map(|r| (r.title.as_str(), r.is_favorite)).collect();
+    assert_eq!(hearts, [("Alpha", true), ("Beta", false)]);
+    Ok(())
+}
+
+// --- Tag-edit query tests ---
+
+#[tokio::test]
+async fn get_tag_edit_rows_by_ids_projects_and_preserves_order() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    // ids ascending == insert order: Alpha, Beta, Gamma.
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM tracks ORDER BY id").fetch_all(db.read()).await?;
+
+    // Patch the fields `make_test_metadata` leaves empty so the projection is exercised.
+    sqlx::query("UPDATE tracks SET isrc = ?, comment = ?, bpm = ?, original_year = ? WHERE id = ?")
+        .bind("GBAYE0601498")
+        .bind("A comment")
+        .bind(128.5_f64)
+        .bind(1999_i32)
+        .bind(ids[0])
+        .execute(db.write())
+        .await?;
+
+    // Request reversed so a plain re-read couldn't accidentally pass.
+    let rows = queries::track::get_tag_edit_rows_by_ids(&db, &[ids[1], ids[0]]).await?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, ids[1]);
+    assert_eq!(rows[1].id, ids[0]);
+
+    let alpha = &rows[1];
+    assert_eq!(alpha.title, "Alpha");
+    assert_eq!(alpha.isrc.as_deref(), Some("GBAYE0601498"));
+    assert_eq!(alpha.comment.as_deref(), Some("A comment"));
+    assert_eq!(alpha.original_year, Some(1999));
+    assert!(matches!(alpha.bpm, Some(b) if (b - 128.5).abs() < 1e-9));
+    // A technical column reads straight off `tracks`.
+    assert_eq!(alpha.codec.as_deref(), Some("Mpeg"));
+    assert_eq!(alpha.bitrate, Some(320));
+    assert_eq!(alpha.duration_ms, 180_000);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_track_paths_by_ids_returns_pairs_in_input_order() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM tracks ORDER BY id").fetch_all(db.read()).await?;
+
+    let pairs = queries::track::get_track_paths_by_ids(&db, &[ids[2], ids[0]]).await?;
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(pairs[0], (ids[2], "/music/gamma.mp3".to_owned()));
+    assert_eq!(pairs[1], (ids[0], "/music/alpha.mp3".to_owned()));
+
+    let empty = queries::track::get_track_paths_by_ids(&db, &[]).await?;
+    assert_eq!(empty.len(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_track_artwork_overwrites_and_nulls() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1").fetch_one(db.read()).await?;
+
+    // Set an authoritative path within a transaction.
+    let mut tx = db.write().begin().await?;
+    queries::track::set_track_artwork(&mut tx, &[id], Some("/covers/new.jpg")).await?;
+    tx.commit().await?;
+
+    let art: Option<String> = sqlx::query_scalar("SELECT artwork_path FROM tracks WHERE id = ?")
+        .bind(id)
+        .fetch_one(db.read())
+        .await?;
+    assert_eq!(art.as_deref(), Some("/covers/new.jpg"));
+
+    // `None` genuinely nulls it — no COALESCE keeping the old value.
+    let mut tx = db.write().begin().await?;
+    queries::track::set_track_artwork(&mut tx, &[id], None).await?;
+    tx.commit().await?;
+
+    let art: Option<String> = sqlx::query_scalar("SELECT artwork_path FROM tracks WHERE id = ?")
+        .bind(id)
+        .fetch_one(db.read())
+        .await?;
+    assert!(art.is_none());
+    Ok(())
+}
+
+/// **The keyset page is strictly past `after_id`, and the strictness is the whole of it.** The
+/// rating import writes ratings back between pages, so a row leaves `rating = 0` as it is
+/// handled; an `id >= ?` would re-serve the last row of every page, and one that stayed unrated
+/// (a file with no rating tag) would be handed back forever.
+#[tokio::test]
+async fn an_unrated_page_starts_past_the_id_it_was_given() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let ids: Vec<i64> =
+        queries::track::get_all_tracks(&db).await?.into_iter().map(|t| t.id).collect();
+    let mut ordered = ids.clone();
+    ordered.sort_unstable();
+
+    let whole = queries::track::get_unrated_track_paths_after(&db, 0, 10).await?;
+    assert_eq!(whole.len(), 3, "every seeded row is unrated");
+
+    let after_first = queries::track::get_unrated_track_paths_after(&db, ordered[0], 10).await?;
+
+    assert_eq!(
+        after_first.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        [ordered[1], ordered[2]],
+        "the row named must not come back in the page after it"
+    );
+    Ok(())
+}
+
+/// The other half of that work-list: a row that has been rated leaves it. `rating = 0` is the
+/// only marker there is, so a filter reading anything else hands the import the whole library on
+/// every page.
+#[tokio::test]
+async fn a_rated_track_is_off_the_import_work_list() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let ids: Vec<i64> =
+        queries::track::get_all_tracks(&db).await?.into_iter().map(|t| t.id).collect();
+    queries::track::set_rating(&db, &ids[..1], 4).await?;
+
+    let unrated = queries::track::get_unrated_track_paths_after(&db, 0, 10).await?;
+
+    assert_eq!(unrated.len(), 2);
+    assert!(!unrated.iter().any(|(id, _)| *id == ids[0]), "the rated row is not work");
+    Ok(())
+}
+
+/// A folder is named by the user and `_` is `LIKE`'s single-character wildcard, so an unescaped
+/// one reaches into the siblings either side of it. Built from [`MAIN_SEPARATOR_STR`] rather than
+/// a spelled `/`, since the pattern this query builds is the native separator and a hand-written
+/// one only ever fails on the platform nobody ran it on.
+#[tokio::test]
+async fn a_folder_named_with_an_underscore_does_not_reach_its_siblings() -> Result<(), AppError> {
+    use std::path::MAIN_SEPARATOR_STR as SEP;
+
+    let db = DbPool::test_pool().await?;
+    let root = format!("{SEP}music");
+    queries::folder::insert_folder(&db, &root, true).await?;
+    let asked = format!("{root}{SEP}my_music");
+    let sibling = format!("{root}{SEP}myXmusic");
+    insert_test_track(&db, &format!("{asked}{SEP}a.mp3"), "A", "Artist", "Album", "Rock").await?;
+    insert_test_track(&db, &format!("{sibling}{SEP}b.mp3"), "B", "Artist", "Album", "Rock").await?;
+
+    let rows = queries::track::get_tracks_in_directory(&db, &asked).await?;
+
+    assert_eq!(rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["A"]);
+    Ok(())
+}
+
+/// The same for `%`, which matches any run at all — a folder carrying one would answer with most
+/// of the library.
+#[tokio::test]
+async fn a_folder_named_with_a_percent_does_not_reach_its_siblings() -> Result<(), AppError> {
+    use std::path::MAIN_SEPARATOR_STR as SEP;
+
+    let db = DbPool::test_pool().await?;
+    let root = format!("{SEP}music");
+    queries::folder::insert_folder(&db, &root, true).await?;
+    let asked = format!("{root}{SEP}100% Live");
+    let sibling = format!("{root}{SEP}100 Proof Live");
+    insert_test_track(&db, &format!("{asked}{SEP}a.mp3"), "A", "Artist", "Album", "Rock").await?;
+    insert_test_track(&db, &format!("{sibling}{SEP}b.mp3"), "B", "Artist", "Album", "Rock").await?;
+
+    let rows = queries::track::get_tracks_in_directory(&db, &asked).await?;
+
+    assert_eq!(rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["A"]);
+    Ok(())
+}
+
+/// **The backfill correlates each row to its own id, and one row cannot show that.** The single
+/// UPDATE joins a `VALUES` list back onto `tracks` through two subqueries, so a mis-correlated
+/// one — reading the first row of the list for every track — writes one file's hash onto all of
+/// them. What that costs is the moved-file path: `file_hash` is what a cross-device move is
+/// matched on, and matching the wrong row re-imports the file and drops its rating and play
+/// count. Both columns, because the two subqueries can be crossed as easily as flattened.
+#[tokio::test]
+async fn a_hash_backfill_gives_each_row_its_own_values() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let mut ids: Vec<i64> =
+        queries::track::get_all_tracks(&db).await?.into_iter().map(|t| t.id).collect();
+    ids.sort_unstable();
+
+    let updates = vec![
+        (ids[0], "hash-first".to_owned(), Some("2021-01-01T00:00:00+00:00".to_owned())),
+        (ids[1], "hash-second".to_owned(), Some("2022-02-02T00:00:00+00:00".to_owned())),
+    ];
+    queries::track::batch_update_hashes(&db, &updates).await?;
+
+    let rows: Vec<(i64, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT id, file_hash, date_modified FROM tracks ORDER BY id")
+            .fetch_all(db.read())
+            .await?;
+
+    assert_eq!(rows[0].1.as_deref(), Some("hash-first"));
+    assert_eq!(rows[0].2.as_deref(), Some("2021-01-01T00:00:00+00:00"));
+    assert_eq!(rows[1].1.as_deref(), Some("hash-second"));
+    assert_eq!(rows[1].2.as_deref(), Some("2022-02-02T00:00:00+00:00"));
+    Ok(())
+}
+
+/// A row the batch did not name keeps what it had. The `WHERE id IN (SELECT id FROM v)` is what
+/// holds that: without it the correlated subqueries answer `NULL` for every other track and the
+/// UPDATE erases the hashes it was not asked about — which reads, later, as a library that needs
+/// rehashing rather than as a bug here.
+#[tokio::test]
+async fn a_hash_backfill_leaves_the_rows_it_did_not_name_alone() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let mut ids: Vec<i64> =
+        queries::track::get_all_tracks(&db).await?.into_iter().map(|t| t.id).collect();
+    ids.sort_unstable();
+    let untouched: Option<String> = sqlx::query_scalar("SELECT file_hash FROM tracks WHERE id = ?")
+        .bind(ids[2])
+        .fetch_one(db.read())
+        .await?;
+
+    queries::track::batch_update_hashes(&db, &[(ids[0], "hash-first".to_owned(), None)]).await?;
+
+    let after: Option<String> = sqlx::query_scalar("SELECT file_hash FROM tracks WHERE id = ?")
+        .bind(ids[2])
+        .fetch_one(db.read())
+        .await?;
+    assert_eq!(after, untouched, "a row outside the batch keeps the hash it had");
+    Ok(())
+}
+
+// --- Detail-page list projections ---
+
+/// One album whose disc and track numbers agree with neither the row order nor the titles, plus a
+/// track in a second album, artist and genre.
+///
+/// The disagreement is the whole fixture: seeded in the order they come back, a missing `ORDER BY`
+/// is satisfied by a bare table scan, which is the trap [`seed_db_inserted_backwards`] was written
+/// for one section up. `make_test_metadata` gives every row disc 1 / track 1, so the numbers are
+/// patched after the insert rather than carried in.
+async fn seed_two_albums() -> Result<DbPool, AppError> {
+    let db = DbPool::test_pool().await?;
+    queries::folder::insert_folder(&db, "/music", true).await?;
+    insert_test_track(&db, "/music/beta.mp3", "Beta", "Artist One", "Album A", "Rock").await?;
+    insert_test_track(&db, "/music/alpha.mp3", "Alpha", "Artist One", "Album A", "Rock").await?;
+    insert_test_track(&db, "/music/gamma.mp3", "Gamma", "Artist One", "Album A", "Rock").await?;
+    insert_test_track(&db, "/music/delta.mp3", "Delta", "Artist Two", "Album B", "Jazz").await?;
+
+    for (title, disc, track) in [("Beta", 1, 1), ("Gamma", 1, 2), ("Alpha", 2, 1)] {
+        sqlx::query("UPDATE tracks SET disc_number = ?, track_number = ? WHERE title = ?")
+            .bind(disc)
+            .bind(track)
+            .bind(title)
+            .execute(db.write())
+            .await?;
+    }
+    Ok(db)
+}
+
+async fn parent_id(db: &DbPool, table: &str, name: &str) -> Result<i64, AppError> {
+    let sql = format!("SELECT id FROM {table} WHERE name = ?");
+    let id = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
+        .bind(name)
+        .fetch_one(db.read())
+        .await?;
+    Ok(id)
+}
+
+fn titles(rows: &[nekonetease_core::entities::track::TrackListRow]) -> Vec<&str> {
+    rows.iter().map(|row| row.title.as_str()).collect()
+}
+
+/// An album reads in the order it was pressed: disc first, track second. Ordering on the track
+/// number alone files disc two's opener among disc one's, and ordering on `sort_key`, which is what
+/// every other track list uses, scrambles the album outright.
+#[tokio::test]
+async fn an_album_lists_by_disc_then_track() -> Result<(), AppError> {
+    let db = seed_two_albums().await?;
+    let album_id = parent_id(&db, "albums", "Album A").await?;
+
+    let rows = queries::track::get_tracks_by_album_for_list(&db, album_id).await?;
+
+    assert_eq!(titles(&rows), ["Beta", "Gamma", "Alpha"]);
+    Ok(())
+}
+
+/// An artist page is one flat list, so it takes the natural order every other track list takes,
+/// and it holds that artist's tracks alone.
+#[tokio::test]
+async fn an_artists_tracks_are_its_own_in_natural_order() -> Result<(), AppError> {
+    let db = seed_two_albums().await?;
+    let artist_id = parent_id(&db, "artists", "Artist One").await?;
+
+    let rows = queries::track::get_tracks_by_artist_for_list(&db, artist_id).await?;
+
+    assert_eq!(titles(&rows), ["Alpha", "Beta", "Gamma"]);
+    Ok(())
+}
+
+/// And a genre page the same, over the column one join away from the artist's.
+#[tokio::test]
+async fn a_genres_tracks_are_its_own_in_natural_order() -> Result<(), AppError> {
+    let db = seed_two_albums().await?;
+    let genre_id = parent_id(&db, "genres", "Rock").await?;
+
+    let rows = queries::track::get_tracks_by_genre_for_list(&db, genre_id).await?;
+
+    assert_eq!(titles(&rows), ["Alpha", "Beta", "Gamma"]);
+    Ok(())
+}
+
+// --- add_play_counts / add_skip_counts ---
+
+const FLUSHED_AT: &str = "2026-09-14T12:00:00+00:00";
+
+async fn seeded_ids(db: &DbPool) -> Result<Vec<i64>, AppError> {
+    Ok(queries::track::get_all_tracks(db).await?.into_iter().map(|t| t.id).collect())
+}
+
+/// How many rows hold exactly `count` in the counter `column`.
+async fn rows_counted(db: &DbPool, column: &str, count: i64) -> Result<i64, AppError> {
+    let sql = format!("SELECT COUNT(*) FROM tracks WHERE {column} = ?");
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).bind(count).fetch_one(db.read()).await?)
+}
+
+/// Every track's play count and `last_played`, in insert order, which [`seed_db`] makes its sort
+/// order too.
+async fn play_stats(db: &DbPool) -> Result<Vec<(i32, Option<String>)>, AppError> {
+    Ok(sqlx::query_as("SELECT play_count, last_played FROM tracks ORDER BY id")
+        .fetch_all(db.read())
+        .await?)
+}
+
+/// One statement carries every row's own increment, so a bind landing on the wrong row hands one
+/// track another's plays.
+#[tokio::test]
+async fn each_track_in_a_play_batch_gets_its_own_increment() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let ids = seeded_ids(&db).await?;
+
+    queries::track::add_play_counts(&db, &[(ids[0], 1), (ids[1], 4), (ids[2], 2)], FLUSHED_AT)
+        .await?;
+
+    let counts: Vec<i32> = play_stats(&db).await?.into_iter().map(|(plays, _)| plays).collect();
+    assert_eq!(counts, [1, 4, 2]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_play_batch_stamps_last_played_on_the_tracks_it_names_and_no_other()
+-> Result<(), AppError> {
+    let db = seed_db().await?;
+    let ids = seeded_ids(&db).await?;
+
+    queries::track::add_play_counts(&db, &[(ids[0], 1), (ids[2], 1)], FLUSHED_AT).await?;
+
+    let stamps: Vec<Option<String>> =
+        play_stats(&db).await?.into_iter().map(|(_, stamp)| stamp).collect();
+    assert_eq!(stamps, [Some(FLUSHED_AT.to_owned()), None, Some(FLUSHED_AT.to_owned())]);
+    Ok(())
+}
+
+/// A track deleted between a play and the flush is still in the batch.
+#[tokio::test]
+async fn a_batch_naming_a_track_the_library_lacks_still_counts_the_rest() -> Result<(), AppError> {
+    let db = seed_db().await?;
+    let ids = seeded_ids(&db).await?;
+
+    queries::track::add_skip_counts(&db, &[(9_999, 1), (ids[0], 2)]).await?;
+
+    assert_eq!(queries::track::get_track_by_id(&db, ids[0]).await?.skip_count, 2);
+    Ok(())
+}
+
+/// A play batch holds one row fewer per statement than a skip batch, its `last_played` stamp
+/// taking a bind of its own, so the two split at different sizes.
+#[tokio::test]
+async fn a_play_batch_one_row_past_a_statement_counts_every_track() -> Result<(), AppError> {
+    let (db, ids) = numbered_library(333).await?;
+    let increments: Vec<(i64, u32)> = ids.iter().map(|&id| (id, 1)).collect();
+
+    queries::track::add_play_counts(&db, &increments, FLUSHED_AT).await?;
+
+    assert_eq!(rows_counted(&db, "play_count", 1).await?, 333);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_skip_batch_one_row_past_a_statement_counts_every_track() -> Result<(), AppError> {
+    let (db, ids) = numbered_library(334).await?;
+    let increments: Vec<(i64, u32)> = ids.iter().map(|&id| (id, 1)).collect();
+
+    queries::track::add_skip_counts(&db, &increments).await?;
+
+    assert_eq!(rows_counted(&db, "skip_count", 1).await?, 334);
+    Ok(())
+}
+
+/// A folder is named by the user and `_` is `LIKE`'s single-character wildcard, so an unescaped
+/// one makes "play this folder" reach a sibling. The replace order is the other half: escaping the
+/// backslash last would re-escape the ones the `%` and `_` arms just introduced.
+#[test]
+fn a_folder_name_cannot_smuggle_a_like_wildcard() {
+    use super::list::{LIKE_SEPARATOR, directory_like_prefix};
+
+    let cases = [
+        ("plain", "plain"),
+        ("50% off", "50\\% off"),
+        ("track_01", "track\\_01"),
+        ("back\\slash", "back\\\\slash"),
+        ("_%\\", "\\_\\%\\\\"),
+    ];
+    for (dir, escaped) in cases {
+        assert_eq!(
+            directory_like_prefix(dir),
+            format!("{escaped}{LIKE_SEPARATOR}"),
+            "folder {dir:?}"
+        );
+    }
+}
+
+async fn still_dated(db: &DbPool) -> Result<i64, AppError> {
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE date_modified IS NOT NULL")
+        .fetch_one(db.read())
+        .await?;
+    Ok(row.0)
+}
+
+/// The column means "the mtime the stored row was parsed from", so NULL is honestly unknown —
+/// `track_is_current` compares it to the file's own and a missing value cannot match one.
+#[tokio::test]
+async fn the_stale_pass_blanks_every_mtime_and_answers_with_what_it_moved() -> Result<(), AppError>
+{
+    let db = seed_db().await?;
+    assert_eq!(still_dated(&db).await?, 3);
+
+    assert_eq!(queries::track::mark_every_track_stale(&db).await?, 3);
+
+    assert_eq!(still_dated(&db).await?, 0);
+    Ok(())
+}
+
+/// **The tag backfill's retry costs one more UPDATE and nothing else.** A second pass finds
+/// nothing to blank, so the sweep's `OnFailure::Retry` cannot put the library back in the queue on
+/// every launch — and `backfill`'s own early return is what reads this zero.
+#[tokio::test]
+async fn a_second_stale_pass_finds_nothing_left_to_mark() -> Result<(), AppError> {
+    let db = seed_db().await?;
+
+    queries::track::mark_every_track_stale(&db).await?;
+
+    assert_eq!(queries::track::mark_every_track_stale(&db).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_empty_library_marks_nothing_stale() -> Result<(), AppError> {
+    let db = DbPool::test_pool().await?;
+
+    assert_eq!(queries::track::mark_every_track_stale(&db).await?, 0);
+    Ok(())
+}

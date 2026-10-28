@@ -1,0 +1,63 @@
+import { Theme } from "../../theme.slint";
+import { Search } from "../../globals/search.slint";
+import { DiscoverCardGrid } from "discover-section.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+
+// Every published chart, in the server's own order, as the same card grid the catalogue pages
+// draw. The directory publishes no category field, so the order is the whole of what it states:
+// no heading rows and nothing invented above them.
+export component ChartsSection inherits VerticalLayout {
+    // The page's content width, handed over by the view as the discovery strip takes it.
+    in property <length> avail-width;
+
+    vertical-stretch: 0;
+    spacing: Theme.pad-sm;
+    min-width: 0px;
+
+    Text {
+        text: @tr("Charts");
+        color: Theme.text;
+        font-size: Theme.font-size-md;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+    }
+
+    // Only with no rows to show, so a stale catalogue never sits beside a failure prompt.
+    if Search.charts-failed && Search.chart-rows.length == 0: VerticalLayout {
+        vertical-stretch: 0;
+        spacing: Theme.pad-sm;
+        min-width: 0px;
+
+        Text {
+            text: @tr("Couldn't load charts");
+            color: Theme.subtext0;
+            font-size: Theme.font-size-sm;
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            alignment: start;
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Retry");
+                    clicked => { Search.retry-discovery(); }
+                }
+            }
+        }
+    }
+
+    if Search.chart-rows.length > 0: DiscoverCardGrid {
+        rows: Search.chart-grid-rows;
+        avail-width: root.avail-width;
+        fallback-icon: "bar_chart";
+        columns-changed(c) => {
+            Search.chart-columns = c;
+            Search.chart-columns-changed(c);
+        }
+        open(id) => {
+            Search.blur-search-tick += 1;
+            Search.open-chart(id);
+        }
+    }
+}

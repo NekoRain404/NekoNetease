@@ -1,0 +1,83 @@
+import { Theme } from "../theme.slint";
+import { WindowChrome } from "../globals/shell.slint";
+import { MacOsTrafficLight } from "macos-traffic-light.slint";
+
+// The three-circle macOS decoration cluster. It owns the `cluster-hovered`
+// mirror — the OR of its children, so all three glyphs reveal together — and
+// flips the left-to-right order on its side so close always sits at the outer
+// window corner.
+//
+// Close and minimize route to the same `WindowChrome.*` callbacks the standard bar
+// buttons use, so nothing in `crates/nekonetease-views/src/ui/window_chrome/controls.rs` needs to know
+// which style is live. **Maximize is the host's**: the titlebar toggles the window, where the
+// miniplayer restores the full player instead.
+export component MacOsTitleBarCluster inherits Rectangle {
+    // Which edge the cluster sits at, the titlebar's setting by default. A host whose placement is
+    // fixed hands its own, so close stays at the corner it actually sits beside.
+    in property <bool> captions-left: Theme.titlebar-button-side == 1;
+    in property <length> cell-height: 32px;
+    in property <string> maximize-tooltip: WindowChrome.is-maximized ? @tr("Restore") : @tr("Maximize");
+    callback maximize();
+
+    // At cluster level rather than per child, so all three animate together
+    // when the cursor enters any one of them.
+    property <bool> cluster-hovered:
+        close-light.hovered || min-light.hovered || max-light.hovered;
+
+    // Three hit targets, their gaps, and one outer pad on the window-edge side
+    // so close sits a touch in from the corner. The height is pinned to the
+    // host's row, so the cluster centres without inheriting the row's stretch.
+    min-height: root.cell-height;
+    max-height: root.cell-height;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    background: transparent;
+
+    GridLayout {
+        spacing: 4px;
+        padding-top: 0;
+        padding-bottom: 0;
+        // On the window-corner side, so close doesn't kiss the edge.
+        padding-left: root.captions-left ? 8px : 4px;
+        padding-right: root.captions-left ? 4px : 8px;
+
+        // `col` flips so close is the outermost circle whichever side the
+        // cluster lives on; minimize is always the middle one. The hues are the
+        // semantic Theme slots, so they re-resolve on every theme change, and
+        // each light derives its own glyph contrast from the fill it lands on.
+        close-light := MacOsTrafficLight {
+            col: root.captions-left ? 0 : 2;
+            row: 0;
+            cell-height: root.cell-height;
+            circle-color: Theme.red;
+            glyph-icon: "close";
+            tooltip-text: @tr("Close");
+            cluster-hovered: root.cluster-hovered;
+            clicked => { WindowChrome.close-window(); }
+        }
+
+        min-light := MacOsTrafficLight {
+            col: 1;
+            row: 0;
+            cell-height: root.cell-height;
+            circle-color: Theme.yellow;
+            glyph-icon: "minimize";
+            tooltip-text: @tr("Minimize");
+            cluster-hovered: root.cluster-hovered;
+            clicked => { WindowChrome.minimize(); }
+        }
+
+        max-light := MacOsTrafficLight {
+            col: root.captions-left ? 2 : 0;
+            row: 0;
+            cell-height: root.cell-height;
+            circle-color: Theme.green;
+            // Material Symbols Rounded ships no zoom glyph; `add` is the
+            // closest widely-read "expand" and sits cleanly in the circle.
+            glyph-icon: "add";
+            tooltip-text: root.maximize-tooltip;
+            cluster-hovered: root.cluster-hovered;
+            clicked => { root.maximize(); }
+        }
+    }
+}

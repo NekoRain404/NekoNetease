@@ -1,0 +1,120 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Favorites } from "../../globals/curated.slint";
+import { CloudTrackActions } from "../../globals/cloud-track-actions.slint";
+import { GridGeometry } from "../../components/grid-geometry.slint";
+import { GridColumnsSync } from "../../components/grid-columns-sync.slint";
+import { EntityCard } from "../../components/grid/entity-card.slint";
+import { CardFavoriteButton } from "../../components/grid/card-favorite-button.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+
+export component CloudFavoritesAlbumsTab inherits Rectangle {
+    geometry := GridGeometry { avail-width: root.width; }
+    GridColumnsSync {
+        computed-cols: geometry.cols;
+        seed(cols) => {
+            Favorites.columns = cols;
+            Favorites.columns-changed(cols);
+        }
+    }
+
+    VerticalLayout {
+        padding-top: Theme.pad-md;
+        spacing: Theme.pad-sm;
+
+        if Favorites.albums-error != "": HorizontalLayout {
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            spacing: Theme.pad-md;
+            Text {
+                text: Favorites.albums-error;
+                color: Theme.subtext0;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Retry");
+                    enabled: !Favorites.albums-loading;
+                    clicked => { Favorites.retry-albums(); }
+                }
+            }
+        }
+
+        panel := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            list := ListView {
+                width: 100%;
+                height: 100%;
+                vertical-scrollbar-policy: always-off;
+                horizontal-scrollbar-policy: always-off;
+                mouse-drag-pan-enabled: false;
+
+                for row in Favorites.album-rows: Rectangle {
+                    min-height: geometry.row-h;
+                    max-height: geometry.row-h;
+                    HorizontalLayout {
+                        padding-left: geometry.gap;
+                        padding-right: geometry.gap;
+                        spacing: geometry.gap;
+                        alignment: start;
+
+                        for album in row.albums: Rectangle {
+                            width: geometry.card-w;
+                            height: geometry.card-h;
+                            card := EntityCard {
+                                card-width: geometry.card-w;
+                                card-height: geometry.card-h;
+                                artwork-path: album.artwork_path;
+                                cover: Favorites.request-album-cover(album.artwork_path, Favorites.album-covers-generation);
+                                fallback-icon: "album";
+                                title: album.title;
+                                subtitle: album.artist;
+                                overlay-hovered: favorite.has-hover;
+                                clicked => { CloudTrackActions.open-album(album.remote_id); }
+                            }
+                            favorite := CardFavoriteButton {
+                                card-width: geometry.card-w;
+                                is-favorite: true;
+                                marks-kept: false;
+                                card-hovered: card.card-hovered;
+                                button-enabled: !album.pending;
+                                tooltip-text: @tr("Unfavorite album");
+                                clicked => { Favorites.set-album-favorite(album.remote_id, false); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            OverlayScrollbar {
+                horizontal: false;
+                x: parent.width - self.width;
+                width: Theme.scrollbar-slot;
+                height: parent.height;
+                visible-size: list.visible-height;
+                content-size: list.viewport-height;
+                offset: -list.viewport-y;
+                scroll-to(o) => { list.viewport-y = -o; }
+            }
+
+            if Favorites.albums-loading && Favorites.album-count <= 0: Text {
+                x: Theme.pad-lg;
+                y: Theme.pad-lg;
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+            }
+
+            if !Favorites.albums-loading && Favorites.albums-error == "" && Favorites.album-count >= 0 && Favorites.filtered-album-count == 0: GridEmptyState {
+                icon: "album";
+                title: Favorites.filter == "" ? @tr("No favorite albums yet") : @tr("No matching albums");
+                body: Favorites.filter == "" ? @tr("Favorite an album from its detail page.") : "";
+            }
+        }
+    }
+}

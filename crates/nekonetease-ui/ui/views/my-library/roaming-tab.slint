@@ -1,0 +1,70 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Playlists } from "../../globals/playlists.slint";
+import { LibraryEntryCard } from "entry-card.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+
+export component RoamingTab inherits Rectangle {
+    sv := ScrollView {
+        width: 100%;
+        height: 100%;
+        horizontal-scrollbar-policy: always-off;
+        vertical-scrollbar-policy: always-off;
+
+        VerticalLayout {
+            padding: Theme.pad-lg;
+            padding-right: Theme.pad-lg + Theme.scrollbar-slot;
+            spacing: Theme.pad-md;
+            alignment: start;
+
+            LibraryEntryCard {
+                title: @tr("Personal roaming");
+                subtitle: @tr("Personal FM");
+                icon: "shuffle";
+                active: Playlists.roaming-mode == 0;
+                activated => { Playlists.start-roaming(0); }
+            }
+            LibraryEntryCard {
+                title: @tr("Heart mode");
+                subtitle: @tr("Liked Songs");
+                icon: "favorite";
+                active: Playlists.roaming-mode == 1;
+                activated => { Playlists.start-roaming(1); }
+            }
+            LibraryEntryCard {
+                title: @tr("Similar songs");
+                subtitle: @tr("Now Playing");
+                icon: "music_note";
+                active: Playlists.roaming-mode == 2;
+                activated => { Playlists.start-roaming(2); }
+            }
+            if Playlists.roaming-loading: Text { text: @tr("Loading…"); color: Theme.subtext0; }
+            if Playlists.roaming-error != "": Text {
+                text: Playlists.roaming-error;
+                color: Theme.subtext0;
+                wrap: word-wrap;
+            }
+            if Playlists.roaming-mode >= 0: ActionPill {
+                PillButton { icon: "stop"; text: @tr("Stop"); clicked => { Playlists.stop-roaming(); } }
+                if Playlists.roaming-mode == 0: PillButton {
+                    icon: "heart_minus";
+                    text: Playlists.roaming-feedback-pending ? @tr("Sending…") : @tr("Not interested");
+                    enabled: !Playlists.roaming-feedback-pending;
+                    clicked => { Playlists.dislike-roaming-current(); }
+                }
+            }
+        }
+    }
+    OverlayScrollbar {
+        horizontal: false;
+        x: parent.width - self.width;
+        y: 0px;
+        width: Theme.scrollbar-slot;
+        height: parent.height;
+        visible-size: sv.visible-height;
+        content-size: sv.viewport-height;
+        offset: -sv.viewport-y;
+        scroll-to(o) => { sv.viewport-y = -o; }
+    }
+}

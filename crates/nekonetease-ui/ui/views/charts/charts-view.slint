@@ -1,0 +1,152 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Charts } from "../../globals/charts.slint";
+import { Search } from "../../globals/search.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { EntityCard } from "../../components/grid/entity-card.slint";
+import { GridGeometry } from "../../components/grid-geometry.slint";
+import { GridColumnsSync } from "../../components/grid-columns-sync.slint";
+
+// Every published chart, in the server's own order, as the same card grid the library pages
+// draw. `EntityCard` is mounted directly rather than through `EntityCardGrid`: a chart is not a
+// selectable library entity and raises no context menu, so the grid's selection machinery would
+// only add a right-click path with nothing behind it. Clicking one is Search's hand-off
+// unchanged, so a chart lands on My Library's Playlists tab with its detail open exactly as it
+// does there.
+export component ChartsView inherits Rectangle {
+    background: Theme.base;
+
+    property <length> grid-gap: 20px;
+    property <int> lone-row-cards:
+        Charts.rows.length == 1 ? Charts.rows[0].charts.length : -1;
+
+    geom := GridGeometry {
+        avail-width: root.width;
+        gap: root.grid-gap;
+        lone-row-cards: root.lone-row-cards;
+    }
+
+    GridColumnsSync {
+        computed-cols: geom.cols;
+        seed(c) => {
+            Charts.columns = c;
+            Charts.columns-changed(c);
+        }
+    }
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-top: Theme.pad-lg;
+        spacing: Theme.pad-sm;
+
+        HorizontalLayout {
+            height: 34px;
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            Text {
+                text: @tr("Charts");
+                color: Theme.page-title-color;
+                font-size: Theme.page-title-size;
+                font-weight: Theme.page-title-weight;
+                vertical-alignment: center;
+            }
+        }
+
+        body := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            list := ListView {
+                x: 0;
+                y: Theme.pad-sm;
+                width: parent.width;
+                height: parent.height - Theme.pad-sm;
+                vertical-scrollbar-policy: always-off;
+                horizontal-scrollbar-policy: always-off;
+                mouse-drag-pan-enabled: false;
+
+                for grid-row in Charts.rows: Rectangle {
+                    min-height: geom.row-h;
+                    max-height: geom.row-h;
+
+                    HorizontalLayout {
+                        padding-left: root.grid-gap;
+                        padding-right: root.grid-gap;
+                        spacing: root.grid-gap;
+                        alignment: start;
+
+                        for chart in grid-row.charts: EntityCard {
+                            card-width: geom.card-w;
+                            card-height: geom.card-h;
+                            artwork-path: chart.artwork_path;
+                            cover: Search.request-entity-cover(
+                                chart.artwork_path, Search.entity-covers-generation,
+                            );
+                            fallback-icon: "bar_chart";
+                            // The placeholder gets the pronounced zoom, as on every other grid;
+                            // real artwork stays gentle inside the tile's clip.
+                            cover-scale-hover: chart.artwork_path == "" ? 1.15 : 1.04;
+                            title: chart.title;
+                            subtitle: chart.subtitle;
+                            clicked => { Search.open-chart(chart.remote_id); }
+                        }
+                    }
+                }
+            }
+
+            if Charts.loading && Charts.rows.length == 0: Text {
+                x: Theme.pad-lg;
+                y: Theme.pad-sm;
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if Charts.failed: VerticalLayout {
+                x: Theme.pad-lg;
+                y: Theme.pad-sm;
+                width: parent.width - 2 * Theme.pad-lg - Theme.scrollbar-slot;
+                spacing: Theme.pad-sm;
+                Text {
+                    text: @tr("Couldn't load charts");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+                ActionPill {
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        clicked => { Charts.retry(); }
+                    }
+                }
+            }
+
+            if !Charts.loading && !Charts.failed && Charts.rows.length == 0: GridEmptyState {
+                x: Theme.pad-lg;
+                y: Theme.pad-sm;
+                width: parent.width - 2 * Theme.pad-lg - Theme.scrollbar-slot;
+                height: parent.height - Theme.pad-sm;
+                icon: "bar_chart";
+                title: @tr("No charts available");
+                body: "";
+            }
+        }
+    }
+
+    OverlayScrollbar {
+        horizontal: false;
+        x: root.width - self.width;
+        y: body.absolute-position.y - root.absolute-position.y + Theme.pad-sm;
+        width: Theme.scrollbar-slot;
+        height: body.height - Theme.pad-sm;
+        visible-size: list.visible-height;
+        content-size: list.viewport-height;
+        offset: -list.viewport-y;
+        scroll-to(o) => { list.viewport-y = -o; }
+    }
+}

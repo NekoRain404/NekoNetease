@@ -1,0 +1,46 @@
+import { Theme } from "../../theme.slint";
+import { PopupSurface } from "../../components/popup-surface.slint";
+
+// The rows under the search bar for the query being typed. The host mounts this absolutely, so
+// the root height is a function of the model and never claims space from the results.
+export component SuggestionsPopup inherits PopupSurface {
+    in property <[string]> rows;
+    callback picked(string);
+
+    property <length> row-height: 34px;
+    property <length> padding-y: Theme.pad-xs;
+
+    height: root.padding-y * 2 + root.rows.length * root.row-height;
+
+    // Rows cover their own hit areas; this keeps a click on the padding inside the popup from
+    // reaching the view behind it and dismissing what the user aimed at.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+    }
+
+    VerticalLayout {
+        padding: root.padding-y;
+        for label in root.rows: Rectangle {
+            height: root.row-height;
+            border-radius: Theme.radius-sm;
+            background: row-touch.has-hover ? Theme.surface0 : transparent;
+            animate background { duration: Theme.dur-fast; easing: ease-in-out; }
+
+            Text {
+                x: Theme.pad-md;
+                y: (parent.height - self.height) / 2;
+                width: parent.width - 2 * Theme.pad-md;
+                text: label;
+                color: Theme.text;
+                font-size: Theme.font-size-md;
+                overflow: elide;
+            }
+
+            row-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.picked(label); }
+            }
+        }
+    }
+}

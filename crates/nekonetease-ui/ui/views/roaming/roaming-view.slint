@@ -1,0 +1,224 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Roaming } from "../../globals/roaming.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+
+component ModeCard inherits Rectangle {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> subtitle;
+    callback picked();
+
+    height: 88px;
+    border-radius: Theme.radius-lg;
+    background: touch.has-hover ? Theme.surface1 : Theme.surface0;
+    border-width: 1px;
+    border-color: Theme.surface2;
+    animate background { duration: Theme.dur-fast; easing: ease-in-out; }
+
+    HorizontalLayout {
+        padding: Theme.pad-md;
+        spacing: Theme.pad-md;
+
+        Rectangle {
+            width: 44px;
+            height: 44px;
+            border-radius: 22px;
+            background: Theme.surface2;
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    MaterialIcon {
+                        name: root.icon;
+                        icon-size: 24px;
+                        icon-color: Theme.accent;
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.font-size-md;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.subtitle;
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            MaterialIcon {
+                name: "chevron_right";
+                icon-size: 20px;
+                icon-color: Theme.subtext0;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+}
+
+// A continuous stream is playback, so the page only describes the session and never owns it.
+// The mode picker is shown while nothing runs; once a roam starts the controls replace it, and
+// leaving the page leaves the stream playing.
+export component RoamingView inherits Rectangle {
+    background: Theme.base;
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-top: Theme.pad-lg;
+        spacing: Theme.pad-sm;
+
+        HorizontalLayout {
+            height: 34px;
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            Text {
+                text: @tr("Roaming");
+                color: Theme.page-title-color;
+                font-size: Theme.page-title-size;
+                font-weight: Theme.page-title-weight;
+                vertical-alignment: center;
+            }
+        }
+
+        sv := ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            vertical-scrollbar-policy: always-off;
+            viewport-width: self.width;
+
+            VerticalLayout {
+                padding-left: Theme.pad-lg;
+                padding-right: Theme.pad-lg + Theme.scrollbar-slot;
+                padding-top: Theme.pad-sm;
+                padding-bottom: Theme.pad-lg;
+                spacing: Theme.pad-md;
+                alignment: start;
+
+                if Roaming.error != "": Text {
+                    text: @tr("Couldn't start roaming: {}", Roaming.error);
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+
+                if Roaming.mode < 0: VerticalLayout {
+                    spacing: Theme.pad-sm;
+
+                    Text {
+                        text: @tr("Start a roam");
+                        color: Theme.text;
+                        font-size: Theme.font-size-lg;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: @tr("Pick where the stream should begin.");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+
+                    ModeCard {
+                        icon: "shuffle";
+                        title: Roaming.mode-title(0);
+                        subtitle: Roaming.mode-subtitle(0);
+                        picked => { Roaming.start(0); }
+                    }
+                    ModeCard {
+                        icon: "favorite";
+                        title: Roaming.mode-title(1);
+                        subtitle: Roaming.mode-subtitle(1);
+                        picked => { Roaming.start(1); }
+                    }
+                    ModeCard {
+                        icon: "music_note";
+                        title: Roaming.mode-title(2);
+                        subtitle: Roaming.mode-subtitle(2);
+                        picked => { Roaming.start(2); }
+                    }
+                }
+
+                if Roaming.mode >= 0: VerticalLayout {
+                    spacing: Theme.pad-sm;
+
+                    Text {
+                        text: Roaming.mode-title(Roaming.mode);
+                        color: Theme.text;
+                        font-size: Theme.font-size-lg;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: Roaming.loading
+                            ? @tr("Starting…")
+                            : @tr("Streaming from this starting point. Leaving the page keeps it playing.");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-sm;
+                        ActionPill {
+                            PillButton {
+                                icon: "queue_play_next";
+                                text: @tr("Skip");
+                                enabled: !Roaming.loading;
+                                clicked => { Roaming.skip(); }
+                            }
+                        }
+                        if Roaming.mode == 0: ActionPill {
+                            PillButton {
+                                icon: "heart_minus";
+                                text: Roaming.feedback-pending
+                                    ? @tr("Sending…")
+                                    : @tr("Not interested");
+                                enabled: !Roaming.loading && !Roaming.feedback-pending;
+                                clicked => { Roaming.dislike(); }
+                            }
+                        }
+                        ActionPill {
+                            PillButton {
+                                icon: "stop";
+                                text: @tr("Stop");
+                                danger: true;
+                                clicked => { Roaming.stop(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    OverlayScrollbar {
+        horizontal: false;
+        x: parent.width - self.width;
+        y: sv.absolute-position.y - root.absolute-position.y;
+        width: Theme.scrollbar-slot;
+        height: sv.height;
+        visible-size: sv.visible-height;
+        content-size: sv.viewport-height;
+        offset: -sv.viewport-y;
+        scroll-to(o) => { sv.viewport-y = -o; }
+    }
+}

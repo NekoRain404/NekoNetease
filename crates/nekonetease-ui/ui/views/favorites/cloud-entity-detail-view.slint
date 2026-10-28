@@ -1,0 +1,341 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Favorites } from "../../globals/curated.slint";
+import { CloudEntityDetail } from "../../globals/cloud-entity-detail.slint";
+import { CloudTrackActions } from "../../globals/cloud-track-actions.slint";
+import { CopyActions } from "../../globals/copy-actions.slint";
+import { ArtworkImage } from "../../components/artwork-image.slint";
+import { EntityCard } from "../../components/grid/entity-card.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { IconButton } from "../../components/icon-button.slint";
+import { CloudPlaylistTracks } from "../my-library/cloud-playlist-tracks.slint";
+
+// Replaces the Favorites song table while an online album or artist page is open. Closing it
+// restores the exact cloud list and filter that were already mounted underneath the hero.
+export component CloudEntityDetailView inherits Rectangle {
+    background: Theme.base;
+    property <bool> comments-visible: CloudEntityDetail.kind == "album"
+        && (CloudEntityDetail.comments.length > 0
+            || CloudEntityDetail.comments-loading
+            || CloudEntityDetail.comments-error != "");
+
+    VerticalLayout {
+        padding: Theme.pad-lg;
+        spacing: Theme.pad-md;
+
+        HorizontalLayout {
+            height: 104px;
+            spacing: Theme.pad-md;
+
+            ArtworkImage {
+                tile-size: 88px;
+                fallback-icon: CloudEntityDetail.kind == "artist" ? "person" : "album";
+                artwork-path: CloudEntityDetail.artwork-path;
+                cover: Favorites.request-album-cover(
+                    CloudEntityDetail.artwork-path, Favorites.album-covers-generation,
+                );
+            }
+
+            VerticalLayout {
+                vertical-stretch: 1;
+                alignment: center;
+                Text {
+                    text: CloudEntityDetail.title;
+                    color: Theme.text;
+                    font-size: Theme.font-size-lg;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                Text {
+                    text: CloudEntityDetail.kind == "artist"
+                        ? @tr("Top songs")
+                        : CloudEntityDetail.subtitle;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-row;
+                    overflow: elide;
+                }
+            }
+
+            if CloudEntityDetail.kind == "album": ActionPill {
+                PillButton {
+                    icon: CloudEntityDetail.album-favorite ? "favorite" : "favorite_border";
+                    icon-filled: CloudEntityDetail.album-favorite;
+                    active: CloudEntityDetail.album-favorite;
+                    text: CloudEntityDetail.album-favorite ? @tr("Unfavorite album") : @tr("Favorite album");
+                    enabled: CloudEntityDetail.album-favorite-known && !CloudEntityDetail.album-favorite-pending;
+                    clicked => {
+                        Favorites.set-album-favorite(CloudEntityDetail.remote-id, !CloudEntityDetail.album-favorite);
+                    }
+                }
+            }
+
+            ActionPill {
+                PillButton {
+                    icon: "link";
+                    text: @tr("Copy link");
+                    clicked => {
+                        CopyActions.copy-text(
+                            "https://music.163.com/" + CloudEntityDetail.kind + "?id="
+                                + CloudEntityDetail.remote-id,
+                        );
+                    }
+                }
+                PillButton {
+                    icon: "arrow_back";
+                    text: @tr("Back");
+                    clicked => { CloudEntityDetail.close(); }
+                }
+            }
+        }
+
+        if CloudEntityDetail.kind == "album" && CloudEntityDetail.album-favorite-error != "": HorizontalLayout {
+            spacing: Theme.pad-md;
+            Text {
+                text: CloudEntityDetail.album-favorite-error;
+                color: Theme.subtext0;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Retry");
+                    enabled: !CloudEntityDetail.album-favorite-pending;
+                    clicked => { Favorites.load-album-favorite(CloudEntityDetail.remote-id); }
+                }
+            }
+        }
+
+        // An artist's filmography. It pages through the server's `limit`/`offset` rather than
+        // prefetching the whole list, so the strip stays a plain `for` over what was asked for.
+        if CloudEntityDetail.kind == "artist": VerticalLayout {
+            spacing: Theme.pad-sm;
+
+            HorizontalLayout {
+                Text {
+                    text: @tr("MVs");
+                    color: Theme.text;
+                    font-size: Theme.font-size-md;
+                    font-weight: 700;
+                    letter-spacing: 0.4px;
+                    horizontal-stretch: 1;
+                }
+                if CloudEntityDetail.mvs-has-more: ActionPill {
+                    PillButton {
+                        icon: "expand_more";
+                        text: @tr("More");
+                        enabled: !CloudEntityDetail.mvs-loading;
+                        clicked => { CloudEntityDetail.load-more-mvs(); }
+                    }
+                }
+            }
+
+            if CloudEntityDetail.mvs-error != "": HorizontalLayout {
+                spacing: Theme.pad-sm;
+                Text {
+                    text: CloudEntityDetail.mvs-error;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                ActionPill {
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        enabled: !CloudEntityDetail.mvs-loading;
+                        clicked => { CloudEntityDetail.load-more-mvs(); }
+                    }
+                }
+            }
+
+            if CloudEntityDetail.mvs-loading && CloudEntityDetail.mvs.length == 0: Text {
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if !CloudEntityDetail.mvs-loading && CloudEntityDetail.mvs-error == ""
+                && CloudEntityDetail.mvs.length == 0: Text {
+                text: @tr("No music videos available");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if CloudEntityDetail.mvs.length > 0: Rectangle {
+                height: 186px;
+                clip: true;
+
+                sv := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    horizontal-scrollbar-policy: always-off;
+                    vertical-scrollbar-policy: always-off;
+                    mouse-drag-pan-enabled: false;
+                    viewport-height: self.height;
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-md;
+                        alignment: start;
+
+                        for mv in CloudEntityDetail.mvs: Rectangle {
+                            width: 150px;
+                            height: 178px;
+                            clip: false;
+
+                            EntityCard {
+                                width: 100%;
+                                height: 100%;
+                                artwork-path: mv.artwork_path;
+                                cover: Favorites.request-album-cover(
+                                    mv.artwork_path, Favorites.album-covers-generation,
+                                );
+                                title: mv.title;
+                                subtitle: mv.subtitle;
+                                card-width: 150px;
+                                card-height: 178px;
+                                fallback-icon: "movie";
+                                clicked => { CloudEntityDetail.open-mv(mv.remote_id); }
+                            }
+                        }
+                    }
+                }
+
+                OverlayScrollbar {
+                    horizontal: true;
+                    x: 0;
+                    y: parent.height - self.height;
+                    width: parent.width;
+                    height: 8px;
+                    visible-size: sv.visible-width;
+                    content-size: sv.viewport-width;
+                    offset: -sv.viewport-x;
+                    scroll-to(o) => { sv.viewport-x = -o; }
+                }
+            }
+        }
+
+        if root.comments-visible: Rectangle {
+            height: 148px;
+            background: Theme.surface1;
+            border-radius: Theme.radius-md;
+            clip: true;
+            VerticalLayout {
+                padding: Theme.pad-sm;
+                spacing: Theme.pad-xs;
+                Text { text: @tr("Recent comments"); color: Theme.text; font-weight: 600; }
+                if CloudEntityDetail.comments.length > 0: PillButton {
+                    text: @tr("All comments");
+                    clicked => { CloudEntityDetail.open-comments(); }
+                }
+                if CloudEntityDetail.comments-loading: Text {
+                    text: @tr("Loading…");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+                if !CloudEntityDetail.comments-loading && CloudEntityDetail.comments-error != "": HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    Text {
+                        text: CloudEntityDetail.comments-error;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    ActionPill {
+                        PillButton {
+                            icon: "refresh";
+                            text: @tr("Retry");
+                            clicked => { CloudEntityDetail.retry-comments(); }
+                        }
+                    }
+                }
+                for comment[i] in CloudEntityDetail.comments: HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    Text { text: comment.author + ":"; color: Theme.subtext0; font-weight: 600; }
+                    Text {
+                        text: comment.content;
+                        color: Theme.text;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    IconButton {
+                        icon: comment.liked ? "favorite" : "favorite_border";
+                        a11y-label: @tr("Like");
+                        icon-size: 15px;
+                        diameter: 22px;
+                        filled: comment.liked;
+                        active: comment.liked;
+                        idle-fg: comment.liked ? Theme.red : Theme.subtext0;
+                        hover-fg: Theme.red;
+                        active-fg: Theme.red;
+                        clicked => {
+                            CloudEntityDetail.toggle-comment-like(i, comment.id, !comment.liked);
+                        }
+                    }
+                    Text {
+                        text: "\{comment.liked_count}";
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            if !CloudEntityDetail.loading && CloudEntityDetail.error == "": CloudPlaylistTracks {
+                width: 100%;
+                height: 100%;
+                rows: CloudEntityDetail.tracks;
+                columns <=> Favorites.track-columns;
+                sort-field: "position";
+                sort-dir: "asc";
+                position-field: "position";
+                show-number: true;
+                favorite-clickable: true;
+                sortable: false;
+                cloud-entity-links: true;
+                play-track(id, index) => { CloudEntityDetail.play-cloud-row(id, index); }
+                toggle-favorite(id, liked) => { CloudTrackActions.toggle-favorite(id, liked); }
+            }
+
+            if CloudEntityDetail.loading: Text {
+                x: Theme.pad-lg;
+                y: Theme.pad-lg;
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+            }
+
+            if !CloudEntityDetail.loading && CloudEntityDetail.error != "": VerticalLayout {
+                x: Theme.pad-lg;
+                y: Theme.pad-lg;
+                width: parent.width - 2 * Theme.pad-lg;
+                spacing: Theme.pad-md;
+                Text {
+                    text: CloudEntityDetail.error;
+                    color: Theme.subtext0;
+                    wrap: word-wrap;
+                }
+                ActionPill {
+                    PillButton {
+                        icon: "refresh";
+                        text: @tr("Retry");
+                        clicked => { CloudEntityDetail.retry(); }
+                    }
+                }
+            }
+
+            if !CloudEntityDetail.loading && CloudEntityDetail.error == ""
+                && CloudEntityDetail.tracks.length == 0: Text {
+                x: Theme.pad-lg;
+                y: Theme.pad-lg;
+                text: @tr("No tracks available");
+                color: Theme.subtext0;
+            }
+        }
+    }
+}

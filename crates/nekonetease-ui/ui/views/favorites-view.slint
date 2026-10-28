@@ -1,0 +1,122 @@
+import { Favorites } from "../globals/curated.slint";
+import { MosaicTabHero } from "../components/hero/mosaic-tab-hero.slint";
+import { FilterThrottle } from "../components/filter-throttle.slint";
+import { ViewTransition } from "../components/view-transition.slint";
+import { CloudFavoritesSongsTab } from "favorites/cloud-favorites-songs-tab.slint";
+import { CloudFavoritesAlbumsTab } from "favorites/cloud-favorites-albums-tab.slint";
+import { CloudFavoritesArtistsTab } from "favorites/cloud-favorites-artists-tab.slint";
+import { CloudFavoritesDiskTab } from "favorites/cloud-favorites-disk-tab.slint";
+
+// NetEase liked songs, saved albums, saved artists and the account's cloud disk share the
+// page's filter and tab bar.
+export component FavoritesView inherits Rectangle {
+    property <int> filter-tick-pending: 0;
+
+    filter-throttle := FilterThrottle {
+        pending: root.filter-tick-pending;
+        fire() => { Favorites.filter-changed(Favorites.filter); }
+    }
+
+    TouchArea {
+        clicked => { Favorites.blur-search-tick += 1; }
+    }
+
+    VerticalLayout {
+        hero := MosaicTabHero {
+            tab-labels: [@tr("Songs"), @tr("Albums"), @tr("Artists"), @tr("Cloud Drive")];
+            tab-icons: ["music_note", "album", "person", "upload"];
+            tab-idx <=> Favorites.tab-idx;
+            title: @tr("Favorites");
+            filter-placeholder: @tr("Filter favorites…");
+            show-empty-copy: false;
+            empty-copy: "";
+            mosaic-count: Favorites.tab-idx == Favorites.tab-albums
+                ? max(Favorites.album-count, 0)
+                : (Favorites.tab-idx == Favorites.tab-cloud-artists
+                    ? max(Favorites.cloud-artist-count, 0)
+                    : (Favorites.tab-idx == Favorites.tab-cloud-disk
+                        ? max(Favorites.cloud-disk-count, 0)
+                        : max(Favorites.track-count, 0)));
+            mosaic-cover: Favorites.cover;
+            empty-glyph: "favorite";
+            empty-glyph-filled: true;
+            blur-a: Favorites.blur-img-a;
+            blur-b: Favorites.blur-img-b;
+            use-a: Favorites.blur-use-a;
+            has-blur: Favorites.has-blur;
+            filter <=> Favorites.filter;
+            blur-tick: Favorites.blur-search-tick;
+
+            search-edited(_) => { root.filter-tick-pending += 1; }
+            tab-selected(i) => {
+                Favorites.filter = "";
+                Favorites.blur-search-tick += 1;
+                Favorites.tab-changed(i);
+            }
+        }
+
+        body := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            if Favorites.tab-idx == Favorites.tab-songs: ViewTransition {
+                width: parent.width;
+                height: parent.height;
+                enter-from: hero.tab-enter-from;
+                enabled: hero.tab-anim-armed;
+
+                CloudFavoritesSongsTab {
+                    width: 100%;
+                    height: 100%;
+                    rows: Favorites.tracks;
+                    columns <=> Favorites.track-columns;
+                    sort-field: Favorites.sort-field;
+                    sort-dir: Favorites.sort-dir;
+                    loading: Favorites.cloud-loading;
+                    error: Favorites.cloud-error;
+                    retry => { Favorites.retry-cloud(); }
+                    play-track(id, index) => { Favorites.play-cloud-row(id, index); }
+                    remove-favorite(id) => { Favorites.toggle-cloud-favorite(id, false); }
+                    request-sort(field) => { Favorites.request-sort(field); }
+                    request-blur-search => { Favorites.blur-search-tick += 1; }
+                }
+            }
+
+            if Favorites.tab-idx == Favorites.tab-albums: ViewTransition {
+                width: parent.width;
+                height: parent.height;
+                enter-from: hero.tab-enter-from;
+                enabled: hero.tab-anim-armed;
+
+                CloudFavoritesAlbumsTab {
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+
+            if Favorites.tab-idx == Favorites.tab-cloud-artists: ViewTransition {
+                width: parent.width;
+                height: parent.height;
+                enter-from: hero.tab-enter-from;
+                enabled: hero.tab-anim-armed;
+
+                CloudFavoritesArtistsTab {
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+
+            if Favorites.tab-idx == Favorites.tab-cloud-disk: ViewTransition {
+                width: parent.width;
+                height: parent.height;
+                enter-from: hero.tab-enter-from;
+                enabled: hero.tab-anim-armed;
+
+                CloudFavoritesDiskTab {
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,37 @@
+import "../assets/fonts/MaterialSymbolsRounded.ttf";
+import "../assets/fonts/MaterialSymbolsRoundedFilled.ttf";
+import { Theme } from "../theme.slint";
+
+// A Material Symbols Rounded glyph by ligature name — the font's GSUB substitutes the outline for
+// the literal. `filled` swaps to a FILL=1 static instance shipped under its own family, FILL being
+// a variation axis where Slint 1.16's `Text` exposes only `font-weight`.
+//
+// **The fixed square is the point.** It collapses the layout box from the font's natural ~1.2× line
+// height down to the em box, so `vertical-alignment: center` centres the glyph in *that* rather
+// than in an inflated line box. Without it the icon's centreline sits a pixel or two below adjacent
+// text — invisible on an asymmetric glyph and glaring on a circular one.
+export component MaterialIcon {
+    in property <string> name;
+    in property <length> icon-size: 22px;
+    in property <brush> icon-color: Theme.text;
+    in property <bool> filled: false;
+    // Fades the glyph without an `opacity` on it, which would both layer and crop the ink
+    // to the line box this component exists to collapse. Separate from `icon-color` because
+    // the hosts that fade also `animate` that brush, and an animated binding restarts on
+    // dependency dirtiness — folded in, the fade would stall the colour crossfade.
+    in property <float> fade: 1.0;
+
+    width: icon-size;
+    height: icon-size;
+
+    Text {
+        text: root.name;
+        font-family: root.filled ? "Material Symbols Rounded Filled" : "Material Symbols Rounded";
+        font-size: root.icon-size;
+        color: root.icon-color.transparentize(1.0 - root.fade);
+        width: 100%;
+        height: 100%;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

@@ -1,0 +1,213 @@
+import { Theme } from "../../theme.slint";
+import { PlaylistDetail } from "../../globals/playlists.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+import { IconButton } from "../../components/icon-button.slint";
+import { ActionPill, PillButton, PillDivider } from "../../components/action-pill.slint";
+import { DialogScrollPane } from "../../components/dialog/dialog-scroll-pane.slint";
+import { SyncConflictKind } from "../../models.slint";
+
+// **Playlist Detail's Sync-with-local review.** A page-local panel rather than a `Dialog` kind:
+// it overlays the list it belongs to, reports this playlist's diff, and writes only the local
+// side. The mount owns the geometry so the panel itself carries only its fill and border.
+//
+// A rounded `clip` here would render the panel and the list beneath it into a texture on every
+// frame either changes, so the corners are drawn rather than cut.
+export component SyncReviewPanel inherits Rectangle {
+    background: Theme.surface1;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    VerticalLayout {
+        padding: Theme.pad-lg;
+        spacing: Theme.pad-md;
+
+        HorizontalLayout {
+            spacing: Theme.pad-sm;
+            VerticalLayout {
+                spacing: 2px;
+                Text {
+                    text: @tr("Sync with local");
+                    color: Theme.text;
+                    font-size: Theme.font-size-lg;
+                    font-weight: 600;
+                }
+                Text {
+                    text: @tr("Only the local playlist changes; the cloud playlist is not written.");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton {
+                icon: "close";
+                tooltip-text: @tr("Close");
+                clicked => { PlaylistDetail.close-sync(); }
+            }
+        }
+
+        if PlaylistDetail.sync-loading: VerticalLayout {
+            vertical-stretch: 1;
+            alignment: start;
+            Text {
+                text: @tr("Checking for changes…");
+                color: Theme.subtext0;
+            }
+        }
+
+        if !PlaylistDetail.sync-loading && PlaylistDetail.sync-error != "": VerticalLayout {
+            vertical-stretch: 1;
+            alignment: start;
+            spacing: Theme.pad-sm;
+            Text {
+                text: PlaylistDetail.sync-error;
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                wrap: word-wrap;
+            }
+            ActionPill {
+                PillButton {
+                    icon: "refresh";
+                    text: @tr("Retry");
+                    clicked => { PlaylistDetail.request-sync-review(); }
+                }
+            }
+        }
+
+        if !PlaylistDetail.sync-loading && PlaylistDetail.sync-error == "": VerticalLayout {
+            vertical-stretch: 1;
+            spacing: Theme.pad-sm;
+
+            DialogScrollPane {
+                vertical-stretch: 1;
+                content-spacing: Theme.pad-sm;
+
+                HorizontalLayout {
+                    Text {
+                        text: @tr("Cloud tracks matched");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "\{PlaylistDetail.sync-cloud-tracks}";
+                        color: Theme.text;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+                HorizontalLayout {
+                    Text {
+                        text: @tr("Added to local");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "\{PlaylistDetail.sync-added}";
+                        color: Theme.text;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+                HorizontalLayout {
+                    Text {
+                        text: @tr("Removed from local");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "\{PlaylistDetail.sync-removed}";
+                        color: Theme.text;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+                HorizontalLayout {
+                    Text {
+                        text: @tr("Cloud songs with no local copy");
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "\{PlaylistDetail.sync-unmatched}";
+                        color: Theme.text;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+
+                if PlaylistDetail.sync-rename-to != "": Text {
+                    text: @tr("Rename the local playlist to “{}”", PlaylistDetail.sync-rename-to);
+                    color: Theme.text;
+                    font-size: Theme.font-size-sm;
+                    wrap: word-wrap;
+                }
+                if PlaylistDetail.sync-creates-playlist: Text {
+                    text: @tr("A new local playlist will be created.");
+                    color: Theme.text;
+                    font-size: Theme.font-size-sm;
+                }
+                if PlaylistDetail.sync-no-changes: Text {
+                    text: @tr("The local playlist is already in sync.");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+
+                if PlaylistDetail.sync-conflicts.length > 0: Text {
+                    text: @tr("When the two sides disagree");
+                    color: Theme.text;
+                    font-size: Theme.font-size-sm;
+                    font-weight: 600;
+                }
+                for conflict in PlaylistDetail.sync-conflicts: HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    MaterialIcon {
+                        name: "info";
+                        icon-size: 16px;
+                        icon-color: Theme.subtext0;
+                    }
+                    Text {
+                        text: conflict.kind == SyncConflictKind.local-removal-kept
+                            ? @tr("You removed “{}” locally, so it is not re-added.", conflict.label)
+                            : (conflict.kind == SyncConflictKind.cloud-removal-kept
+                                ? @tr("The cloud dropped “{}”; your local copy stays.", conflict.label)
+                                : @tr("Both sides renamed the playlist; the local name stays."));
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            HorizontalLayout {
+                spacing: Theme.pad-sm;
+                ActionPill {
+                    PillButton {
+                        text: @tr("Local wins");
+                        active: PlaylistDetail.sync-policy == "local";
+                        enabled: !PlaylistDetail.sync-applying;
+                        clicked => { PlaylistDetail.set-sync-policy("local"); }
+                    }
+                    PillDivider { }
+                    PillButton {
+                        text: @tr("Cloud wins");
+                        active: PlaylistDetail.sync-policy == "cloud";
+                        enabled: !PlaylistDetail.sync-applying;
+                        clicked => { PlaylistDetail.set-sync-policy("cloud"); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                PillButton {
+                    icon: PlaylistDetail.sync-applying ? "" : "check";
+                    text: PlaylistDetail.sync-applying ? @tr("Applying…") : @tr("Apply");
+                    enabled: PlaylistDetail.sync-can-apply && !PlaylistDetail.sync-applying;
+                    clicked => { PlaylistDetail.apply-sync(); }
+                }
+            }
+        }
+    }
+}

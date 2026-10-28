@@ -1,0 +1,475 @@
+// Structs crossing the Rust ↔ Slint boundary. **Field names and types must mirror the Rust side
+// exactly** — Slint ignores extra Rust fields and defaults missing ones, so a mismatch is silent.
+// Slint has no `Option<T>` either, hence the typed defaults (`""`, `0`) in the conversions.
+
+export struct TrackSummaryRow {
+    id: int,
+    // Exact identity across the Slint boundary, including cloud IDs above i32::MAX.
+    remote_id: string,
+    file_path: string,
+    title: string,
+    artist: string,
+    album: string,
+    duration_ms: int,
+    artwork_path: string,
+    // Empty (`width == 0`) when the track has no artwork or the decode failed;
+    // `ArtworkImage` falls back to the music_note glyph on that.
+    cover_img: image,
+    is_favorite: bool,
+    rating: int,   // 0–5, 0 = unrated
+    // The song's music video, as exact decimal text; empty when it has none. The transport bar
+    // offers it beside the comment button, so a cloud track with a video is one click away.
+    mv_remote_id: string,
+}
+
+// Mirror of `entities::track::TrackListRow`.
+export struct TrackListRow {
+    id: int,
+    // Exact decimal identity for cloud rows. Slint's `int` is 32-bit, while NetEase song IDs are
+    // 64-bit; keeping the wire ID as text prevents large IDs from aliasing at i32::MAX.
+    remote_id: string,
+    title: string,
+    artist: string,
+    album: string,
+    genre: string,
+    year: int,           // 0 = unknown
+    track_number: int,   // 0 = unknown
+    duration_ms: int,
+    is_favorite: bool,
+    rating: int,   // 0–5, 0 = unrated
+    artwork_path: string,
+    // This source is either a local path or, for cloud rows, a remote HTTP/S URL. **No decoded
+    // cover field** — the thumbnail resolves lazily through `RowCovers.request(artwork_path,
+    // artist, album, generation)` per instantiated row, the grids'
+    // `request-cover` contract.
+    // An `image` here made every model row pin its pixel buffer past LRU eviction, so resident
+    // artwork scaled with the library rather than with the visible rows.
+
+    // Formatted once in Rust rather than through a Slint `format-duration` call, which would
+    // re-evaluate on every property invalidation, times the visible row count.
+    display_duration: string,
+    // `selected` and `enabled` are UI state, not persisted on the Rust entity. They ride on the row
+    // because a Slint expression can't iterate to test set membership, so writing the bit per row
+    // is the cheapest reactive option. Browse sets `enabled` false for disk-only files — on disk
+    // inside a library folder but not yet in the DB, so `id == 0` — which dims the row.
+    selected: bool,
+    enabled: bool,
+    // FK targets for the context menu's "Go to …" entries; 0 means no linkage and
+    // hides the entry.
+    album_id: int,
+    artist_id: int,
+    genre_id: int,
+    // Exact NetEase entity IDs for cloud-row navigation; unlike Slint `int`, strings preserve
+    // the service's full 64-bit IDs. Local rows leave these as their decimal linkage IDs too.
+    album_remote_id: string,
+    artist_remote_id: string,
+    // The song's NetEase music video ID, "" when it has none. A string for the `remote_id`
+    // reason above; every local row leaves it empty, which is what hides the menu entry.
+    mv_remote_id: string,
+    // The local track this cloud row matched when the user asked for the mapping, "title · artist"
+    // when it has one. Empty on every local row and on a cloud row no local copy matched.
+    local_match: string,
+}
+
+// One page's track list columns, and what `views.json` keeps of them. `w_number`, `w_year` and
+// `w_length` are pixels; the other four are weights, read against whatever room the list has.
+// `ui::track_columns` is the only reader of either meaning. Title and Length are always shown, and
+// `show_artwork` is the thumbnail inside the title cell rather than a column.
+export struct TrackColumns {
+    w_number: length,
+    w_title: length,
+    w_artist: length,
+    w_album: length,
+    w_genre: length,
+    w_year: length,
+    w_length: length,
+    show_number: bool,
+    show_artwork: bool,
+    show_artist: bool,
+    show_album: bool,
+    show_genre: bool,
+    show_year: bool,
+}
+
+// Where each column sits across one list width, for the header and every row to share. A hidden
+// column carries zeros.
+export struct TrackColumnLayout {
+    number_x: length,
+    number_w: length,
+    title_x: length,
+    title_w: length,
+    artist_x: length,
+    artist_w: length,
+    album_x: length,
+    album_w: length,
+    genre_x: length,
+    genre_w: length,
+    year_x: length,
+    year_w: length,
+    length_x: length,
+    length_w: length,
+}
+
+// The column whose right-edge divider is being dragged.
+export enum TrackColumn { number, title, artist, album, genre, year, length }
+
+// One album card in the grid, and the Album Detail header. **No `cover_img`**: the cover is pulled
+// per visible card through `request-cover(artwork_path, generation) -> image`, so only on-screen
+// `EntityCard`s ever lock `CoverThumbs`. Every entity row below shares that contract.
+export struct AlbumRow {
+    id: int,
+    name: string,
+    // Carried for the card menu's "Go to Artist" alone — the card itself paints the name.
+    artist_id: int,
+    artist_name: string,
+    year: int,            // 0 = unknown
+    track_count: int,
+    total_duration_ms: int,
+    artwork_path: string,
+}
+
+// One virtualized grid row: up to `Albums.columns` cards. Rust re-chunks the flat list whenever the
+// column count, filter or sort changes, so the `ListView` virtualizes by *row* — a struct with a
+// model-typed field being the canonical Slint way to express that. Every `*GridRow` is this shape.
+export struct AlbumGridRow {
+    albums: [AlbumRow],
+}
+
+export struct ArtistRow {
+    id: int,
+    name: string,
+    image_path: string,
+    track_count: int,
+    album_count: int,
+    total_duration_ms: int,
+}
+
+export struct ArtistGridRow {
+    artists: [ArtistRow],
+}
+
+// Genres have no intrinsic artwork, so there is no path and no cached image: the card and the
+// detail header paint a deterministic name-hash gradient instead, composed inline on the Slint
+// side. The stops come from `genres::color::genre_accent`, which hashes the name once and varies
+// hue, hue-offset, saturation and value on independent axes. **Only the saturated pair crosses**
+// — `genre_accent` also carries a dimmer one for the full-bleed backdrop, but nothing here paints
+// it, and `apply_genre_hero` re-hashes rather than taking it back off this struct.
+export struct GenreRow {
+    id: int,
+    name: string,
+    track_count: int,
+    total_duration_ms: int,
+    display_duration: string,
+    tile_color_1: color,
+    tile_color_2: color,
+}
+
+export struct GenreGridRow {
+    genres: [GenreRow],
+}
+
+// The thumbnail is either a user-picked mosaic of up to four of the playlist's own
+// track artworks, or the first track's artwork; empty `artwork_path` paints the
+// `queue_music` fallback glyph.
+export struct PlaylistRow {
+    id: int,
+    // NetEase entity IDs are 64-bit and can exceed Slint's signed 32-bit `int`.
+    // Keep the exact identity for cloud navigation; `id` remains the bounded legacy UI value.
+    remote_id: string,
+    name: string,
+    description: string,
+    artwork_path: string,
+    track_count: int,
+    total_duration_ms: int,
+    // Membership derived from stored rules rather than a curated list. Surfaces a badge
+    // and disables every manual edit — reorder, add, remove — on card and detail alike.
+    is_smart: bool,
+}
+
+export struct PlaylistGridRow {
+    playlists: [PlaylistRow],
+}
+
+export struct PlaylistCommentRow {
+    id: int,
+    // Exact decimal identity for the like route. Slint's `int` is 32-bit and NetEase comment ids
+    // outgrow it, so `id` guards the row while this carries the value the request addresses.
+    remote_id: string,
+    author: string,
+    content: string,
+    time_ms: int,
+    liked: bool,
+    liked_count: int,
+}
+
+// One row in the Add-to-Playlist picker, built from `PlaylistStats` plus the per-selection overlap
+// count. Multi-select like the Export picker: `selected` is toggled per row and en masse, and the
+// Add dispatcher reads it back. A row whose `contained_count` covers the whole selection greys out
+// as unselectable, with an "X of Y already added" subtitle for partial overlap. The thumbnail comes
+// off the same row-tier LRU the track lists use, so it costs no extra decode.
+export struct PlaylistPickRow {
+    id: int,
+    // The exact NetEase id for a cloud row; empty for a local one, whose `id` already names it.
+    remote_id: string,
+    name: string,
+    artwork_path: string,
+    contained_count: int,
+    selected: bool,
+}
+
+// The Export-playlists picker's row — same toggle-and-read-back shape, no overlap.
+export struct PlaylistExportPickRow {
+    id: int,
+    name: string,
+    artwork_path: string,
+    track_count: int,
+    selected: bool,
+}
+
+// One row of the Edit-Tags credit editor. `join-index` points into `TagEditor.join-phrases`,
+// which Rust owns; the phrase itself never crosses as a string, so a mis-typed separator cannot
+// reach the file from here. The last row's index is ignored — nothing follows it to join to.
+export struct ArtistCreditRow {
+    name: string,
+    join-index: int,
+}
+
+// One rule row in the Smart-Playlist editor. Rust-owned; the editor mutates it through
+// `SmartEditor.set-rule-*` and Rust rebuilds a `SmartCriteria` on commit. **Every value is an index
+// or code**, so no translated string round-trips — the dropdown labels are inline `@tr` arrays in
+// the editor body, mirrored by position to `entities::smart_criteria::{FIELDS, ops_for}`.
+//   * field-kind — 0 text · 1 number · 2 bool · 3 date; picks the op array
+//   * input-kind — 0 none · 1 text · 2 number; picks the value widget
+export struct SmartRuleRow {
+    field-index: int,
+    op-index: int,
+    field-kind: int,
+    input-kind: int,
+    value-text: string,
+}
+
+// **`position_ms`, `duration_ms` and `progress` deliberately live on the `Player` global as
+// separate scalars, not here.** Bundled in, each 500 ms monitor tick invalidated the whole
+// `Player.vm` and dirty-marked every binding reading *any* field — a recursive walk of the
+// dependency list twice a second, for as long as playback lasted. Kept out, a tick's dirty
+// set is the three readers that care.
+export struct PlayerVm {
+    has_track: bool,
+    track: TrackSummaryRow,
+status: string,
+    is_playing: bool,
+    volume: int,
+    is_muted: bool,
+    playback_speed: float,
+    gapless: bool,
+    // Mirrors `PlayerState::pause_after_current_track`. The overflow menu's sleep row
+    // reads it directly, so it auto-clears when the monitor fires.
+    sleep_at_track_end: bool,
+    has_next: bool,
+    has_previous: bool,
+}
+
+export struct QueueVm {
+    length: int,
+    current_index: int,
+    shuffle: bool,
+    repeat_mode: string,
+    has_next: bool,
+    has_previous: bool,
+}
+
+// Rebuilt by `spawn_queue_rows_subscriber` on every queue mutation. **`is_current` is deliberately
+// not a field** — the highlight comes off `Queue.current-index`, so one integer write repaints the
+// two affected rows instead of rewriting the whole model. `selected` rides on the row for the
+// `TrackListRow` reason: `ui/queue_sheet/` mutates it through a shadow `Vec<QueueRow>` so
+// `remove_selected` can read the selection without round-tripping Slint, then pushes the row into
+// the live `VecModel` so the UI flips synchronously.
+export struct QueueRow {
+    id: int,
+    remote_id: string,
+    is_cloud: bool,
+    title: string,
+    artist: string,
+    album: string,
+    artwork_path: string,
+    // No `cover_img`, per the `TrackListRow` contract — and it matters most here:
+    // activating a row queues the whole view, so an eager cover meant one cache lookup
+    // per library track on every queue emit.
+
+    display_duration: string,
+    selected: bool,
+    is_favorite: bool,
+    // FK targets for the context menu's "Go to …" entries; 0 means no linkage and hides the
+    // entry. `TrackSummary` carries no foreign keys, so unlike `TrackListRow`'s these arrive a
+    // beat after the row does — `ui::queue_sheet::links` fetches and patches them in.
+    album_id: int,
+    artist_id: int,
+    genre_id: int,
+}
+
+// The Now Playing chip row's technical metadata, async-fetched on track change through
+// an 8-column projection rather than a full `Track`. Every field is a formatted display
+// string where `""` means unknown or not yet loaded, so the view gates each chip on
+// non-empty and the whole row on `track_id == Player.vm.track.id` — which is what
+// identifies a slow fetch landing after a rapid track change as stale.
+export struct TrackMetaRow {
+    track_id: int,
+    codec: string,        // "FLAC"
+    bitrate: string,      // "1009 kbps"
+    sample_rate: string,  // "44.1 kHz"
+    bit_depth: string,    // "16-bit"
+    channels: string,     // "Stereo"
+    year: string,         // "2017"
+    genre: string,        // "Jazz"
+}
+
+// One row in the Library Folders settings list. `last-scanned` is formatted in Rust and
+// empty when the folder has never been scanned.
+export struct FolderListRow {
+    id: int,
+    path: string,
+    last-scanned: string,
+}
+
+// One subfolder row in the Browse view. Just enough to render the row
+// (`name`) and drill into it (`path`).
+export struct BrowseFolderRow {
+    path: string,
+    name: string,
+}
+
+// One card in Browse's card view — folders first, then files in display order. Deliberately
+// *not* `EntityStripRow`: a browse card carries fields no entity card has, and widening that
+// struct would tax the four grids sharing it. `row_index` indexes `Browse.rows`, so a
+// card activation reaches `play-row` with exactly the index the `TrackList` would have passed.
+export struct BrowseCardRow {
+    id: int,             // track id; 0 for a folder and for a disk-only file
+    row_index: int,      // index into `Browse.rows`; -1 for a folder
+    path: string,        // folder path; "" for a track card
+    title: string,
+    subtitle: string,
+    artwork_path: string,
+    is_folder: bool,
+    enabled: bool,
+}
+
+export struct BrowseCardGridRow {
+    cards: [BrowseCardRow],
+}
+
+// One card in a `HorizontalCardStrip` or an `EntityCardGrid`, deliberately one shape across
+// every flavour so a single component renders all of them — `id` is whichever entity the host
+// deals in. `play_count` is only consulted under `show-play-count`, so its 0 default
+// suppresses the badge everywhere else.
+export struct EntityStripRow {
+    id: int,
+    title: string,
+    subtitle: string,
+    artwork_path: string,
+    play_count: int,
+    // A track card's heart. Unread on every other kind, whose grids mount no heart.
+    is_favorite: bool,
+}
+
+export struct EntityGridRow {
+    entities: [EntityStripRow],
+}
+
+// One music video in an artist's filmography strip. The ID is text because `NetEase` MV ids are
+// 64-bit; the card reuses `EntityCard`, whose own row shape carries an `int` id.
+export struct MvCardRow {
+    remote_id: string,
+    title: string,
+    subtitle: string,
+    artwork_path: string,
+}
+
+// Cloud IDs stay strings across the Slint boundary, including IDs beyond i32::MAX.
+export struct CloudAlbumRow {
+    remote_id: string,
+    title: string,
+    artist: string,
+    artwork_path: string,
+    pending: bool,
+}
+
+export struct CloudAlbumGridRow {
+    albums: [CloudAlbumRow],
+}
+
+// One segment in Browse's breadcrumb bar: `label` is the path basename, `path` the
+// absolute target. Rebuilt on every `current-path` change from reversed `ancestors()`
+// with the final segment dropped — that one is the rendered title, not a click target.
+export struct BreadcrumbRow {
+    label: string,
+    path: string,
+}
+
+// `info` first, being both the default and the card's fallback styling.
+export enum NotificationVariant { info, success, warning, error }
+
+// Routes a row's action button and groups rows for `dismiss_by_kind`. Which kinds route is
+// decided by `ui::shell::notifications::run_action`'s exhaustive match.
+export enum NotificationKind {
+    none,
+    install-update,
+    update-restart,
+    crash-report,
+    exclusive-refused,
+    update-failed,
+    watcher-disabled,
+    library-resyncing,
+    audio-device-lost,
+    artwork-restoring,
+}
+
+// One row in the bottom-right notification stack. `id` is a monotonic handle for
+// `Notifications.dismiss`; an empty `action-label` renders no button (the close X is always
+// there).
+export struct NotificationRow {
+    id: int,
+    variant: NotificationVariant,
+    title: string,
+    message: string,
+    action-label: string,
+    kind: NotificationKind,
+}
+
+// One row of the lyrics panel: a line of the sheet, or a gap the sheet leaves between two of them.
+// Mirror of `entities::lyrics::LyricLine`, plus the heights the panel draws its three parts at.
+//
+// **Every count is Rust's answer, not the layout's.** A `for` loop exposes no per-item element
+// whose `y` could be read back, so following the song means Rust owning a cumulative offset table.
+// It can only do that if it also decides how tall each row is, which it does by estimating the
+// wrap the way `ui::chips` estimates a chip's width. Over by one costs a blank line; under by one
+// elides.
+//
+// The three are declared in the order they are drawn: the words, how they sound, what they mean.
+//
+// `at_ms` is `-1` on an untimed sheet, the two never mixing within one sheet.
+export struct LyricRow {
+    text: string,
+    // Empty for a Latin line and for every line while the toggle is off, `romanization_line_count`
+    // being 0 with it. Rust blanks it rather than the panel hiding it, so one answer decides both
+    // what is drawn and how tall the row is.
+    romanization: string,
+    // Empty where the sheet carries no gloss, `translation_line_count` being 0 with it.
+    translation: string,
+    at_ms: int,
+    // Whether this row is a gap rather than a line, drawn as the filling notes. Spelled out rather
+    // than read off empty text and a stamp: that pair only means a gap because the parser folds the
+    // blank stamps away, which is not something the panel can see.
+    is_interlude: bool,
+    line_count: int,
+    romanization_line_count: int,
+    translation_line_count: int,
+}
+
+// One divergence a sync dry run reports, and which side it came from. The label names the local
+// track and is empty for a name conflict: Rust has no `@tr`, so the review panel owns the sentence.
+export enum SyncConflictKind { local-removal-kept, cloud-removal-kept, name-kept }
+
+export struct SyncConflictRow {
+    kind: SyncConflictKind,
+    label: string,
+}

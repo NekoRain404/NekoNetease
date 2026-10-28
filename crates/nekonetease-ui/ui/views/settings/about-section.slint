@@ -1,0 +1,117 @@
+import { Settings } from "../../settings.slint";
+import { SettingsPage } from "../../globals/settings-page.slint";
+import { NekoNeteaseUpdater } from "../../globals/updater.slint";
+import { SectionCard } from "../../components/settings/section-card.slint";
+import { SectionDivider } from "../../components/settings/section-divider.slint";
+import { SettingRow } from "../../components/settings/setting-row.slint";
+import { SectionButton } from "../../components/settings/section-button.slint";
+
+// The About pane: identity, adapter and UI framework authors, and the license.
+// Unlike Updates, only the search filter can hide a row.
+//
+// The version reads `NekoNeteaseUpdater.current-version` rather than its own copy,
+// so About and Updates can't disagree. Both author links use the system launcher
+// through `crates/nekonetease-views/src/ui/settings/about.rs`.
+export component AboutSection inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    in property <string> tab-name;
+
+    property <string> card-title: @tr("About");
+
+    pure function row-visible(label: string, desc: string) -> bool {
+        return SettingsPage.row-visible(root.tab-name, root.card-title,
+                                        label + " " + desc,
+                                        SettingsPage.search-query);
+    }
+
+    // The brands, the SPDX id and "GitHub" stay untranslated but still
+    // belong in the haystack — they're what a user would type.
+    property <string> app-label: "NekoNetease";
+    // Translators: `{}` is the version number, such as 0.9.2
+    property <string> version-desc: @tr("Version {}", NekoNeteaseUpdater.current-version);
+    // Translators: `{}` is the adapter author's GitHub name, kept as is
+    property <string> adapter-author-label: @tr("NetEase Cloud Music adapter author: {}", "NekoRain");
+    // Translators: `{}` is the UI framework author's name, kept as is
+    property <string> framework-author-label: @tr("UI framework author: {}", "Kenan Salar");
+    property <string> repo-label: "GitHub";
+    property <string> license-label: @tr("License");
+    property <string> license-desc: "AGPL-3.0-or-later";
+    property <string> welcome-label: @tr("Welcome Guide");
+    property <string> welcome-desc: @tr("Run the first-run setup again.");
+    // Translators: a button in a narrow slot, so keep it short
+    property <string> welcome-action: @tr("Show");
+
+    property <bool> show-app: row-visible(app-label, version-desc);
+    property <bool> show-adapter-author: row-visible(adapter-author-label, repo-label);
+    property <bool> show-framework-author: row-visible(framework-author-label, repo-label);
+    property <bool> show-license: row-visible(license-label, license-desc);
+    property <bool> show-welcome: row-visible(welcome-label, welcome-desc);
+
+    out property <bool> has-matches: show-app || show-adapter-author
+        || show-framework-author || show-license || show-welcome;
+
+    // Wrapper so the root's preferred-height tracks the card's natural height —
+    // see `language-section.slint`.
+    VerticalLayout {
+        if has-matches: SectionCard {
+            title: root.card-title;
+
+            if root.show-app: SettingRow {
+                icon: "info";
+                label: root.app-label;
+                description: root.version-desc;
+            }
+
+            if root.show-app && root.show-adapter-author: SectionDivider {}
+            if root.show-adapter-author: SettingRow {
+                icon: "person";
+                label: root.adapter-author-label;
+                SectionButton {
+                    label: root.repo-label;
+                    icon: "";
+                    primary: false;
+                    clicked => { Settings.open-adapter-author(); }
+                }
+            }
+
+            if (root.show-app || root.show-adapter-author) && root.show-framework-author:
+                SectionDivider {}
+            if root.show-framework-author: SettingRow {
+                icon: "person";
+                label: root.framework-author-label;
+                SectionButton {
+                    label: root.repo-label;
+                    icon: "";
+                    primary: false;
+                    clicked => { Settings.open-framework-author(); }
+                }
+            }
+
+            if (root.show-app || root.show-adapter-author || root.show-framework-author)
+                && root.show-license: SectionDivider {}
+            if root.show-license: SettingRow {
+                icon: "balance";
+                label: root.license-label;
+                description: root.license-desc;
+            }
+
+            // Wired from `ui/onboarding/`, which owns the welcome card.
+            if (root.show-app || root.show-adapter-author || root.show-framework-author || root.show-license)
+                && root.show-welcome: SectionDivider {}
+            if root.show-welcome: SettingRow {
+                icon: "waving_hand";
+                label: root.welcome-label;
+                description: root.welcome-desc;
+                SectionButton {
+                    label: root.welcome-action;
+                    icon: "";
+                    primary: false;
+                    clicked => { Settings.run-onboarding(); }
+                }
+            }
+        }
+    }
+}

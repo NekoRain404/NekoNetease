@@ -1,0 +1,66 @@
+import { TrackListRow, TrackColumns } from "../../models.slint";
+import { Player } from "../../globals/player.slint";
+import { TrackList } from "../../components/track-list/track-list.slint";
+import { TrackListScrollbars } from "../../components/track-list-scrollbars.slint";
+
+// The entire table is shared with Recently Played; cloud actions retain exact IDs.
+export component CloudPlaylistTracks inherits Rectangle {
+    in property <[TrackListRow]> rows;
+    in-out property <TrackColumns> columns;
+    in property <string> sort-field;
+    in property <string> sort-dir;
+    in property <string> position-field: "position";
+    in property <bool> favorite-clickable: true;
+    in property <bool> show-number: false;
+    in property <bool> sortable: true;
+    in property <bool> cloud-entity-links: true;
+    // Only an owned (created) playlist admits the remove entry; a collected one is read-only.
+    in property <bool> owned: false;
+    callback request-sort(string);
+    callback play-track(string, int);
+    callback toggle-favorite(string, bool);
+    callback remove-track(string);
+    callback move-track(string, int);
+    callback request-blur-search();
+    out property <length> body-y: tl.body-y;
+
+    // Restore the favorites order column even for view state saved by the old layout.
+    init => { if (root.show-number) { root.columns.show_number = true; } }
+
+    tl := TrackList {
+        width: 100%;
+        height: 100%;
+        rows: root.rows;
+        columns <=> root.columns;
+        sort-field: root.sort-field == root.position-field ? "track_number" : root.sort-field;
+        sort-dir: root.sort-dir;
+        playing-track-id: Player.vm.track.id;
+        playing-remote-id: Player.vm.track.file_path == "" ? Player.vm.track.remote_id : "";
+        cloud-rows: true;
+        cloud-entity-links: root.cloud-entity-links;
+        cloud-single-click: false;
+        cloud-favorite-clickable: root.favorite-clickable;
+        cloud-playlist-editable: root.owned;
+        cloud-playlist-reorderable: root.owned;
+        sortable: root.sortable;
+        request-sort(field) => {
+            root.request-sort(field == "track_number" ? root.position-field : field);
+        }
+        play-cloud-row(id, index) => { root.play-track(id, index); }
+        toggle-cloud-favorite(id, liked) => { root.toggle-favorite(id, liked); }
+        remove-cloud-row(id) => { root.remove-track(id); }
+        move-cloud-row(id, delta) => { root.move-track(id, delta); }
+        request-blur-search => { root.request-blur-search(); }
+    }
+
+    TrackListScrollbars {
+        x: 0; y: 0; width: 100%; height: 100%;
+        list-y: tl.absolute-position.y - root.absolute-position.y;
+        body-y: tl.body-y;
+        body-height: tl.body-height;
+        v-visible-height: tl.v-visible-height;
+        v-viewport-height: tl.v-viewport-height;
+        v-offset: tl.v-offset;
+        set-v-offset(o) => { tl.set-v-offset(o); }
+    }
+}

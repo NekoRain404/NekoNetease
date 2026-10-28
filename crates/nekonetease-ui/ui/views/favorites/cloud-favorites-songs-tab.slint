@@ -1,0 +1,71 @@
+import { Theme } from "../../theme.slint";
+import { TrackListRow, TrackColumns } from "../../models.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { CloudPlaylistTracks } from "../my-library/cloud-playlist-tracks.slint";
+
+// The liked-song page shares the standard column header with playlist details.
+// Its heart action keeps the cloud unlike behavior.
+export component CloudFavoritesSongsTab inherits Rectangle {
+    in property <[TrackListRow]> rows;
+    in-out property <TrackColumns> columns;
+    in property <string> sort-field;
+    in property <string> sort-dir;
+    in property <bool> loading;
+    in property <string> error;
+
+    callback retry();
+    callback play-track(string, int);
+    callback remove-favorite(string);
+    callback request-sort(string);
+    callback request-blur-search();
+
+    songs-list := CloudPlaylistTracks {
+        width: 100%;
+        height: 100%;
+        rows: root.rows;
+        columns <=> root.columns;
+        sort-field: root.sort-field;
+        sort-dir: root.sort-dir;
+        position-field: "track_number";
+        show-number: true;
+        favorite-clickable: true;
+        cloud-entity-links: true;
+        request-sort(field) => { root.request-sort(field); }
+        play-track(id, index) => { root.play-track(id, index); }
+        toggle-favorite(id, liked) => { if (!liked) { root.remove-favorite(id); } }
+        request-blur-search => { root.request-blur-search(); }
+    }
+
+    if root.loading && root.rows.length == 0: Text {
+        x: Theme.pad-lg;
+        y: songs-list.body-y + Theme.pad-lg;
+        text: @tr("Loading favorites…");
+        color: Theme.subtext0;
+    }
+
+    if root.error != "" && root.rows.length == 0: VerticalLayout {
+        x: Theme.pad-lg;
+        y: songs-list.body-y + Theme.pad-lg;
+        width: parent.width - 2 * Theme.pad-lg;
+        spacing: Theme.pad-md;
+        Text {
+            text: root.error;
+            color: Theme.subtext0;
+            wrap: word-wrap;
+        }
+        ActionPill {
+            PillButton {
+                icon: "refresh";
+                text: @tr("Retry");
+                clicked => { root.retry(); }
+            }
+        }
+    }
+
+    if !root.loading && root.error == "" && root.rows.length == 0: Text {
+        x: Theme.pad-lg;
+        y: songs-list.body-y + Theme.pad-lg;
+        text: @tr("No NetEase favorites yet");
+        color: Theme.subtext0;
+    }
+}

@@ -1,0 +1,37 @@
+import { Theme } from "../theme.slint";
+import { MaterialIcon } from "material-icon.slint";
+
+// The custom checkbox, shared by the track row's selection and the column
+// toggle. Its glyph sits in a fixed square so it centres in its em box rather
+// than in an inflated line box.
+//
+// Purely visual: the caller wraps it in whatever `TouchArea` its click semantics
+// need — the row's carries shift / ctrl range-select, the popup's is a plain
+// click.
+export component Checkbox inherits Rectangle {
+    in property <bool> checked;
+    // The empty box's rim, a knob because hosts disagree: the Settings overflow grid
+    // and the track row want it as present as the text beside them, where the popup
+    // and queue boxes stay quiet.
+    in property <brush> unchecked-border: Theme.surface1;
+    // A dimmed host's fade, handed down so the host needs no `opacity`.
+    in property <float> fade: 1.0;
+
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: (root.checked ? Theme.accent : transparent).transparentize(1.0 - root.fade);
+    border-color: (root.checked ? Theme.accent : root.unchecked-border).transparentize(1.0 - root.fade);
+    border-width: 1px;
+    animate background { duration: Theme.dur-fast; easing: ease-in-out; }
+    animate border-color { duration: Theme.dur-fast; easing: ease-in-out; }
+
+    if root.checked: MaterialIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: "check";
+        icon-size: 14px;
+        icon-color: Theme.crust;
+        fade: root.fade;
+    }
+}

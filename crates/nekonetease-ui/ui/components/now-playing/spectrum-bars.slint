@@ -1,0 +1,59 @@
+import { Visualizer } from "../../globals/audio.slint";
+import { Player } from "../../globals/player.slint";
+
+// Spectrum-analyzer style: one bar per band, bass left. A silent band rests at its own column width
+// rather than collapsing, so an idle strip reads as a row of marks rather than a flat rule waiting
+// for something.
+//
+// **Every band is one figure, not one element.** FemtoVG builds and tessellates a path per drawn
+// element and caches none of it between frames, so a band drawn as its own Rectangle costs a path
+// built, tessellated and filled on its own every frame, and the strip rewrites every band every
+// tick. The geometry arrives as an SVG command string for the same reason the trace's does, Slint
+// rejecting `for`-generated path elements outright (slint-ui/slint#754).
+// `spectrum::write_bar_path` is the writer and owns the anchor too, so "Mirrored" needs nothing
+// here past handing over the style index.
+//
+// Heights come straight off the analyzer, which Rust has already smoothed with a fast attack and a
+// slow decay, which is why there is deliberately **no** `animate`: animating an already-smoothed
+// value phase-lags. Pure render, the footprint and Timer belonging to `visualizer-strip.slint`.
+export component SpectrumBars inherits Rectangle {
+    Path {
+        // Asked for over the strip's live geometry rather than pushed by the tick: the figure is
+        // snapped to whole device pixels for one width, so any relayout has to redraw it, and a
+        // strip at rest has no tick coming to do that.
+        commands: Visualizer.bars-figure(
+            Visualizer.bars-generation,
+            Visualizer.style-idx,
+            root.absolute-position.x / 1px,
+            root.absolute-position.y / 1px,
+            root.width / 1px,
+            root.height / 1px
+        );
+
+        // Rust normalizes into this box, so it's a constant and no band count crosses the
+        // boundary. Not optional: without one, Slint fits the path's *own* bounding box to the
+        // element, renormalizing every frame and drawing a quiet band as tall as a peak.
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 1;
+        viewbox-height: 1;
+        // The default `contain` preserves aspect ratio and would letterbox this box into a sliver
+        // down the middle.
+        fit: fill;
+
+        // **Off, and the geometry is snapped to suit.** A bar is a few pixels wide and, mirrored, a
+        // few tall, so a half-covered row at each end is a visible share of it rather than a soft
+        // edge — and snapping inside the viewbox can't fix that on its own, the strip's own origin
+        // landing wherever a centred column in a scroller puts it. Equal whole-pixel widths aren't
+        // enough either: counted from a half-pixel origin, every edge sits on a pixel centre and
+        // thresholded coverage rounds each one its own way. `write_bar_path` takes the strip's
+        // window position and puts every edge on a pixel boundary instead.
+        anti-alias: false;
+
+        // The per-artwork accent, so the strip harmonizes with the blur, but the tone-floored
+        // variant — a dark album's raw accent sinks into the scrimmed backdrop. `np-viz` rather
+        // than the tier itself: the bars move, and motion reads louder than the weight the still
+        // chrome around them wants.
+        fill: Player.np-viz;
+    }
+}

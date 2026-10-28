@@ -1,0 +1,317 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Social } from "../../globals/social.slint";
+import { Playlists } from "../../globals/playlists.slint";
+import { ArtworkImage } from "../../components/artwork-image.slint";
+import { EntityCard } from "../../components/grid/entity-card.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { OverlayScrollbar } from "../../components/overlay-scrollbar.slint";
+import { PillButton } from "../../components/action-pill.slint";
+
+// One user's page: who they are, the playlists they share, then their dynamics.
+//
+// The follow control mutates optimistically in Rust, so `profile-busy` is the only local state it
+// needs; `profile-self` hides the control rather than leaving a button that can only fail.
+export component SocialProfileView inherits Rectangle {
+    background: transparent;
+
+    VerticalLayout {
+        padding-left: Theme.pad-lg;
+        padding-right: Theme.pad-lg;
+        padding-top: Theme.pad-md;
+        spacing: Theme.pad-md;
+
+        HorizontalLayout {
+            spacing: Theme.pad-md;
+            alignment: start;
+
+            ArtworkImage {
+                tile-size: 64px;
+                tile-radius: 32px;
+                artwork-path: Social.profile-avatar-path;
+                has-cover: Social.profile-avatar-path != "";
+                cover: Social.request-cover(
+                    Social.profile-avatar-path, Social.remote-covers-generation,
+                );
+                fallback-icon: "person";
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 2px;
+                alignment: center;
+
+                Text {
+                    text: Social.profile-name == "" ? "…" : Social.profile-name;
+                    color: Theme.text;
+                    font-size: Theme.font-size-lg;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: Social.profile-signature;
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: @tr("Followers {}  ·  Following {}  ·  Playlists {}  ·  Events {}",
+                        Social.profile-followers, Social.profile-following,
+                        Social.profile-playlists, Social.profile-events);
+                    color: Theme.overlay1;
+                    font-size: Theme.font-size-sm;
+                    overflow: elide;
+                }
+            }
+
+            if !Social.profile-self: PillButton {
+                text: Social.profile-followed ? @tr("Following") : @tr("Follow");
+                active: Social.profile-followed;
+                enabled: !Social.profile-busy && !Social.profile-loading;
+                clicked => { Social.toggle-follow(); }
+            }
+        }
+
+        if Social.profile-error != "": HorizontalLayout {
+            spacing: Theme.pad-sm;
+
+            Text {
+                text: Social.profile-error;
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            PillButton {
+                icon: "refresh";
+                text: @tr("Retry");
+                clicked => { Social.retry(); }
+            }
+        }
+
+        if Social.playlists-error != "": HorizontalLayout {
+            spacing: Theme.pad-sm;
+
+            Text {
+                text: Social.playlists-error;
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            PillButton {
+                icon: "refresh";
+                text: @tr("Retry");
+                clicked => { Social.retry(); }
+            }
+        }
+
+        if Social.playlists-loading && Social.playlists.length == 0: Text {
+            text: @tr("Loading…");
+            color: Theme.subtext0;
+            font-size: Theme.font-size-sm;
+        }
+
+        if Social.playlists.length > 0: VerticalLayout {
+            spacing: Theme.pad-xs;
+
+            Text {
+                text: @tr("Playlists");
+                color: Theme.text;
+                font-size: Theme.font-size-md;
+                font-weight: 600;
+            }
+
+            Rectangle {
+                height: 168px;
+                clip: true;
+
+                sv := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    horizontal-scrollbar-policy: always-off;
+                    vertical-scrollbar-policy: always-off;
+                    mouse-drag-pan-enabled: false;
+                    viewport-height: self.height;
+
+                    HorizontalLayout {
+                        spacing: Theme.pad-md;
+                        alignment: start;
+
+                        for playlist in Social.playlists: EntityCard {
+                            artwork-path: playlist.artwork-path;
+                            cover: Social.request-cover(
+                                playlist.artwork-path, Social.remote-covers-generation,
+                            );
+                            title: playlist.title;
+                            subtitle: playlist.subtitle;
+                            card-width: 132px;
+                            card-height: 160px;
+                            fallback-icon: "queue_music";
+                            clicked => {
+                                Social.close();
+                                Playlists.open-playlist(playlist.id);
+                            }
+                        }
+                    }
+                }
+
+                OverlayScrollbar {
+                    horizontal: true;
+                    x: 0;
+                    y: parent.height - self.height;
+                    width: parent.width;
+                    height: 8px;
+                    visible-size: sv.visible-width;
+                    content-size: sv.viewport-width;
+                    offset: -sv.viewport-x;
+                    scroll-to(o) => { sv.viewport-x = -o; }
+                }
+            }
+        }
+
+        if Social.playlists-has-more: PillButton {
+            text: Social.playlists-loading ? @tr("Loading…") : @tr("More playlists");
+            enabled: !Social.playlists-loading;
+            clicked => { Social.load-more-playlists(); }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            if Social.events-loading && Social.events.length == 0: Text {
+                text: @tr("Loading…");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+            }
+
+            if !Social.events-loading && Social.events-error == ""
+                && Social.events.length == 0: GridEmptyState {
+                icon: "chat";
+                title: @tr("No dynamics yet");
+                body: @tr("This user hasn't shared anything.");
+            }
+
+            if Social.events-error != "" && Social.events.length == 0: GridEmptyState {
+                icon: "refresh";
+                title: @tr("Couldn't load dynamics");
+                body: Social.events-error;
+                action-icon: "refresh";
+                action-label: @tr("Retry");
+                action-clicked => { Social.retry(); }
+            }
+
+            events := ListView {
+                x: 0;
+                y: 0;
+                width: parent.width - Theme.scrollbar-slot;
+                height: parent.height;
+                viewport-width: self.width;
+                horizontal-scrollbar-policy: always-off;
+                vertical-scrollbar-policy: always-off;
+
+                for event[i] in Social.events: Rectangle {
+                    height: 76px;
+                    background: Math.mod(i, 2) == 0 ? transparent : Theme.surface0;
+                    border-radius: Theme.radius-sm;
+
+                    HorizontalLayout {
+                        padding: Theme.pad-sm;
+                        spacing: Theme.pad-sm;
+                        alignment: start;
+
+                        ArtworkImage {
+                            tile-size: 48px;
+                            artwork-path: event.artwork-path;
+                            has-cover: event.artwork-path != "";
+                            cover: Social.request-cover(
+                                event.artwork-path, Social.remote-covers-generation,
+                            );
+                            fallback-icon: event.kind == "track" ? "music_note"
+                                : event.kind == "playlist" ? "queue_music" : "chat";
+                        }
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 1px;
+                            alignment: center;
+
+                            Text {
+                                text: event.title;
+                                color: Theme.text;
+                                font-size: Theme.font-size-md;
+                                overflow: elide;
+                            }
+
+                            if event.subtitle != "": Text {
+                                text: event.subtitle;
+                                color: Theme.subtext0;
+                                font-size: Theme.font-size-sm;
+                                overflow: elide;
+                            }
+
+                            if event.text != "": Text {
+                                text: event.text;
+                                color: Theme.subtext1;
+                                font-size: Theme.font-size-sm;
+                                overflow: elide;
+                            }
+                        }
+
+                        Text {
+                            text: event.display-time;
+                            color: Theme.overlay1;
+                            font-size: Theme.font-size-sm;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            OverlayScrollbar {
+                horizontal: false;
+                x: parent.width - self.width;
+                y: 0;
+                width: Theme.scrollbar-slot;
+                height: parent.height;
+                track-color: Theme.scrollbar-track-on-card;
+                visible-size: events.visible-height;
+                content-size: events.viewport-height;
+                offset: -events.viewport-y;
+                scroll-to(o) => { events.viewport-y = -o; }
+            }
+        }
+
+        // Same footer contract as the notifications tab: a failed page keeps the rows it never
+        // touched, and the notice stands where the More pill was until a retry lands.
+        if Social.events-more-error != "": HorizontalLayout {
+            alignment: center;
+            spacing: Theme.pad-sm;
+
+            Text {
+                text: @tr("Couldn't load more");
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                vertical-alignment: center;
+            }
+
+            PillButton {
+                icon: "refresh";
+                text: Social.events-loading-more ? @tr("Loading…") : @tr("Retry");
+                enabled: !Social.events-loading-more;
+                clicked => { Social.load-more-events(); }
+            }
+        }
+
+        if Social.events-more-error == "" && Social.events-has-more: PillButton {
+            text: Social.events-loading-more ? @tr("Loading…") : @tr("More dynamics");
+            enabled: !Social.events-loading-more;
+            clicked => { Social.load-more-events(); }
+        }
+    }
+}

@@ -1,0 +1,185 @@
+//! Batched flusher for `play_count` / `skip_count` UPDATEs.
+//!
+//! Without this, every track end / skip fires a separate write-pool round-trip
+//! (see `PlayerAction::UpdatePlayCount` / `UpdateSkipCount` in
+//! `crates/nekonetease-engine/src/player/engine/actions.rs`). A user rapidly
+//! skipping through a playlist can easily fire 10 UPDATEs in a few seconds,
+//! each waiting for the WAL writer.
+//!
+//! The flusher absorbs both kinds of events on an `UnboundedSender` and
+//! coalesces them into a single multi-row `CASE WHEN` UPDATE every 2 s (or on
+//! shutdown). Senders never block — the channel is unbounded — and the queue
+//! shape is `Vec<(track_id, kind)>` so duplicate events on the same track
+//! just stack into the same `play_count + N` increment.
+//!
+//! A failed write puts its batch back in the maps rather than dropping it: play counts are a
+//! listening history nothing rebuilds, so the next flush retries them.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio_util::sync::CancellationToken;
+
+use crate::state::Signal;
+use crate::tasks::TaskSpawner;
+use nekonetease_core::error::describe;
+use nekonetease_core::utils::now_rfc3339;
+use nekonetease_core::utils::play_counts::{self, PlayCountEvent};
+use nekonetease_store::database::{DbPool, queries};
+
+/// How often to flush pending events. Short enough that play counts feel
+/// up-to-date in the UI on the next track change, long enough to batch a
+/// realistic burst of skips into a single write.
+const FLUSH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Distinct tracks a failed flush will hold between attempts. A healthy flusher drains both maps
+/// every [`FLUSH_INTERVAL`], so only a database refusing writes grows them, and left alone that
+/// growth lasts as long as the process does. 4096 is far more than a session can play between a
+/// failed write and the retry two seconds later, and bounds the worst case to a few hundred KiB
+/// rather than one entry per track ever played.
+const MAX_PENDING_TRACKS: usize = 4096;
+
+/// Spawn the flusher. Idempotent — a second call is a no-op (re-using the
+/// existing sender). Tracked by `spawner` so shutdown awaits the final
+/// flush before the runtime is dropped.
+///
+/// `stats_changed` is bumped after every successful play-count flush
+/// so subscribers (Favorites hero mosaic, future "Most Played" widgets,
+/// …) re-fetch when the ranking changes. Deliberately NOT
+/// `library_changed`: a play-count write changes a ranking, not the
+/// library's structure, and bumping the structural channel forced every
+/// view refresher + `queue_prune` to run after every played song.
+/// Skip-count flushes do not bump — no UI surface depends on skip counts.
+pub fn spawn(spawner: &TaskSpawner, db: DbPool, stats_changed: Signal) {
+    let Some(rx) = play_counts::install() else {
+        return;
+    };
+    spawner.spawn_cancellable(move |shutdown| run(rx, shutdown, db, stats_changed));
+}
+
+async fn run(
+    mut rx: UnboundedReceiver<PlayCountEvent>,
+    shutdown: CancellationToken,
+    db: DbPool,
+    stats_changed: Signal,
+) {
+    let mut interval = tokio::time::interval(FLUSH_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut play_counts: HashMap<i64, u32> = HashMap::new();
+    let mut skip_counts: HashMap<i64, u32> = HashMap::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => {
+                // Drain any remaining events without blocking.
+                while let Ok(ev) = rx.try_recv() {
+                    record(&mut play_counts, &mut skip_counts, ev);
+                }
+                flush(&db, &mut play_counts, &mut skip_counts, &stats_changed).await;
+                log::info!("Play-count flusher stopped");
+                return;
+            }
+            ev = rx.recv() => if let Some(ev) = ev { record(&mut play_counts, &mut skip_counts, ev) } else {
+                flush(&db, &mut play_counts, &mut skip_counts, &stats_changed).await;
+                return;
+            },
+            _ = interval.tick() => {
+                flush(&db, &mut play_counts, &mut skip_counts, &stats_changed).await;
+            }
+        }
+    }
+}
+
+fn record(plays: &mut HashMap<i64, u32>, skips: &mut HashMap<i64, u32>, ev: PlayCountEvent) {
+    let (counts, track_id) = match ev {
+        PlayCountEvent::Play(id) => (plays, id),
+        PlayCountEvent::Skip(id) => (skips, id),
+    };
+    if add_pending(counts, track_id, 1).is_some() {
+        log::warn!("Pending counts full at {MAX_PENDING_TRACKS} tracks; dropped one event");
+    }
+}
+
+/// Adds `increment` to a track's pending count, returning it back when the map is at
+/// [`MAX_PENDING_TRACKS`]. Existing tracks keep accumulating past the ceiling: the entries already
+/// held are the ones a failed write is waiting to replay, so a new track is what gives way.
+fn add_pending(counts: &mut HashMap<i64, u32>, track_id: i64, increment: u32) -> Option<u32> {
+    if let Some(count) = counts.get_mut(&track_id) {
+        *count = count.saturating_add(increment);
+        return None;
+    }
+    if counts.len() >= MAX_PENDING_TRACKS {
+        return Some(increment);
+    }
+    counts.insert(track_id, increment);
+    None
+}
+
+/// Puts a failed batch back into the live map. The adds are saturating because arrivals that
+/// land while the write is in flight must not replace, or wrap, the counts already held.
+fn merge_back(counts: &mut HashMap<i64, u32>, batch: Vec<(i64, u32)>) {
+    let mut refused = 0usize;
+    for (track_id, increment) in batch {
+        if add_pending(counts, track_id, increment).is_some() {
+            refused += 1;
+        }
+    }
+    if refused > 0 {
+        log::warn!(
+            "Pending counts full at {MAX_PENDING_TRACKS} tracks; dropped counts for {refused} track(s)"
+        );
+    }
+}
+
+async fn flush(
+    db: &DbPool,
+    plays: &mut HashMap<i64, u32>,
+    skips: &mut HashMap<i64, u32>,
+    stats_changed: &Signal,
+) {
+    if plays.is_empty() && skips.is_empty() {
+        return;
+    }
+
+    let mut play_flush_ok = false;
+    if !plays.is_empty() {
+        let increments: Vec<(i64, u32)> = plays.drain().collect();
+        match queries::track::add_play_counts(db, &increments, &now_rfc3339()).await {
+            Ok(()) => play_flush_ok = true,
+            Err(e) => {
+                log::warn!(
+                    "Failed to flush play counts for {} track(s), holding them: {}",
+                    increments.len(),
+                    describe(&e)
+                );
+                merge_back(plays, increments);
+            }
+        }
+    }
+    if !skips.is_empty() {
+        let increments: Vec<(i64, u32)> = skips.drain().collect();
+        if let Err(e) = queries::track::add_skip_counts(db, &increments).await {
+            log::warn!(
+                "Failed to flush skip counts for {} track(s), holding them: {}",
+                increments.len(),
+                describe(&e)
+            );
+            merge_back(skips, increments);
+        }
+    }
+    // Bump only on a successful play-count flush — the Favorites hero
+    // mosaic (top-4 most-played) and any future "Most Played" widget
+    // pulls from `play_count`, so a fresh write means the ranking may
+    // have shifted. Skips are intentionally out of scope; no UI surface
+    // ranks by skip_count today, and bumping for nothing would cost a
+    // wasted re-fetch on every skip burst.
+    if play_flush_ok {
+        stats_changed.bump();
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/play_count_flusher_tests.rs"]
+mod tests;

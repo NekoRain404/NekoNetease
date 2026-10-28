@@ -1,0 +1,76 @@
+[package]
+name = "nekonetease-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The command layer: the library API, the background tasks, the app state and its settings"
+publish = false
+
+[lib]
+doctest = false
+
+# Names every crate below it, which is what makes it the app layer rather than another tier: the
+# question it answers is what to do, and every answer needs a database, a socket, a decoder or the
+# OS. What it must not name is `nekonetease-views` or `nekonetease-ui`, the second because a `.slint` edit
+# would then rebuild this crate. `lib.rs` re-exports nothing, so the crates absent from views' own
+# table stay unreachable rather than arriving through here.
+[dependencies]
+nekonetease-core = { path = "../nekonetease-core" }
+nekonetease-audio = { path = "../nekonetease-audio" }
+nekonetease-artwork = { path = "../nekonetease-artwork" }
+nekonetease-net = { path = "../nekonetease-net" }
+nekonetease-platform = { path = "../nekonetease-platform" }
+nekonetease-playback = { path = "../nekonetease-playback" }
+nekonetease-engine = { path = "../nekonetease-engine" }
+nekonetease-store = { path = "../nekonetease-store" }
+nekonetease-integrations = { path = "../nekonetease-integrations" }
+nekonetease-video = { path = "../nekonetease-video" }
+
+tokio.workspace = true
+tokio-util.workspace = true
+parking_lot.workspace = true
+lofty.workspace = true
+rand.workspace = true
+rayon.workspace = true
+blake3.workspace = true
+natord.workspace = true
+unicode-normalization.workspace = true
+# `library::lyrics::romanize` and nowhere else. Declared here rather than in a leaf crate of
+# their own because the isolation is the same either way — a package's dependencies reach only
+# the packages that name it — and a private module under `library/lyrics/` is unreachable from
+# outside this crate, where a leaf would have to publish an API all of it could call.
+uroman.workspace = true
+kakasi.workspace = true
+unicode-script.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+reqwest.workspace = true
+keyring.workspace = true
+log.workspace = true
+thiserror.workspace = true
+open.workspace = true
+minisign-verify.workspace = true
+semver.workspace = true
+futures-util.workspace = true
+lru.workspace = true
+zip.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+nekonetease-audio = { path = "../nekonetease-audio" }
+nekonetease-testkit = { path = "../nekonetease-testkit" }
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+# The suites seed rows and read them back. Production code reaches the database through
+# `nekonetease-store` alone, so it can't name this.
+sqlx.workspace = true
+
+[lints]
+workspace = true

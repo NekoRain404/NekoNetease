@@ -1,0 +1,7 @@
+/target/
+/.local/
+*.log
+*.db
+*.db-shm
+*.db-wal
+

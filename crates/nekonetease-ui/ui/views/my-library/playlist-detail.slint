@@ -1,0 +1,312 @@
+import { Theme } from "../../theme.slint";
+import { MyLibrary } from "../../globals/my-library.slint";
+import { Player } from "../../globals/player.slint";
+import { PlaylistDetail } from "../../globals/playlists.slint";
+import { DraggableTrackList } from "../../components/track-list/draggable-track-list.slint";
+import { GridEmptyState } from "../../components/grid/grid-empty-state.slint";
+import { TrackListScrollbars } from "../../components/track-list-scrollbars.slint";
+import { MaterialIcon } from "../../components/material-icon.slint";
+import { IconButton } from "../../components/icon-button.slint";
+import { CloudTrackActions } from "../../globals/cloud-track-actions.slint";
+import { ActionPill, PillButton } from "../../components/action-pill.slint";
+import { SyncReviewPanel } from "sync-review-panel.slint";
+
+// `AlbumDetailBody`'s shape over `DraggableTrackList` — the shared `TrackList` stays
+// drag-free for Tracks / Browse / the other three details — plus the empty state and the
+// OS file-drop banner, which both fill `body`.
+export component PlaylistDetailBody inherits Rectangle {
+    // The `<=>`s below adopt whatever the globals held — a two-way link keeps the right
+    // side's value, and the globals outlive this view. Without the reset a drag
+    // interrupted by nav-away returns as a ghosted row under a stranded drop line. `init`
+    // runs after the links, so it wins.
+    init => {
+        PlaylistDetail.drag-source = -1;
+        PlaylistDetail.drop-slot = -1;
+        PlaylistDetail.sync-open = false;
+    }
+
+    // Catches clicks no inner TouchArea consumes; the band's SearchBar blurs on the tick.
+    TouchArea {
+        clicked => { MyLibrary.blur-search-tick += 1; }
+    }
+
+    // The list is always mounted so `tl` stays in scope for the overlay scrollbars; the
+    // empty state paints on top of its bare header.
+    body := Rectangle {
+        width: 100%;
+        height: 100%;
+
+        // Comments are a preview, capped in Rust, so the band needs no scroller of its own. It
+        // reserves height for a load in progress and for its own failure, since a retry that
+        // only appeared after the request came back would leave the first frame saying nothing.
+        property <bool> comments-visible: PlaylistDetail.cloud-collection
+            && (PlaylistDetail.comments.length > 0
+                || PlaylistDetail.comments-loading
+                || PlaylistDetail.comments-error != "");
+        property <length> comments-height: body.comments-visible ? 164px : 0px;
+
+        if body.comments-visible: Rectangle {
+            x: Theme.pad-lg;
+            y: Theme.pad-sm;
+            width: parent.width - 2 * Theme.pad-lg;
+            height: body.comments-height - Theme.pad-sm;
+            background: Theme.surface1;
+            border-radius: Theme.radius-md;
+            clip: true;
+            VerticalLayout {
+                padding: Theme.pad-sm;
+                spacing: Theme.pad-xs;
+                // The pill shares the title's row: the band is height-capped, so a row of its
+                // own would come out of the last preview line.
+                HorizontalLayout {
+                    spacing: Theme.pad-xs;
+                    Text {
+                        text: @tr("Recent comments");
+                        color: Theme.text;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                    }
+                    if PlaylistDetail.comments.length > 0: PillButton {
+                        text: @tr("All comments");
+                        clicked => { PlaylistDetail.open-comments(); }
+                    }
+                }
+                if PlaylistDetail.comments-loading: Text {
+                    text: @tr("Loading…");
+                    color: Theme.subtext0;
+                    font-size: Theme.font-size-sm;
+                }
+                if !PlaylistDetail.comments-loading && PlaylistDetail.comments-error != "": HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    Text {
+                        text: PlaylistDetail.comments-error;
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    ActionPill {
+                        PillButton {
+                            icon: "refresh";
+                            text: @tr("Retry");
+                            clicked => { PlaylistDetail.retry-comments(); }
+                        }
+                    }
+                }
+                for comment[i] in PlaylistDetail.comments: HorizontalLayout {
+                    spacing: Theme.pad-sm;
+                    Text { text: comment.author + ":"; color: Theme.subtext0; font-weight: 600; }
+                    Text {
+                        text: comment.content;
+                        color: Theme.text;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    IconButton {
+                        icon: comment.liked ? "favorite" : "favorite_border";
+                        a11y-label: @tr("Like");
+                        icon-size: 15px;
+                        diameter: 22px;
+                        filled: comment.liked;
+                        active: comment.liked;
+                        idle-fg: comment.liked ? Theme.red : Theme.subtext0;
+                        hover-fg: Theme.red;
+                        active-fg: Theme.red;
+                        clicked => {
+                            PlaylistDetail.toggle-comment-like(i, comment.id, !comment.liked);
+                        }
+                    }
+                    Text {
+                        text: "\{comment.liked_count}";
+                        color: Theme.subtext0;
+                        font-size: Theme.font-size-sm;
+                    }
+                }
+            }
+        }
+
+        // A cloud playlist shares the table and the drag, but speaks the remote id everywhere and
+        // keeps the row menu's cloud actions. The wrapper's sort mapping is inlined because the
+        // playlist's natural order is `position`, which no header cell names.
+        if PlaylistDetail.cloud-collection: cloud-body := Rectangle {
+            y: body.comments-height;
+            width: 100%;
+            height: max(0px, parent.height - body.comments-height);
+
+            cloud-tl := DraggableTrackList {
+                width: 100%;
+                height: 100%;
+                rows: PlaylistDetail.tracks;
+                // The number column carries the playlist's own position, the order a drag rewrites.
+                init => { PlaylistDetail.track-columns.show_number = true; }
+                columns <=> PlaylistDetail.track-columns;
+                sort-field: PlaylistDetail.sort-field == "position"
+                    ? "track_number"
+                    : PlaylistDetail.sort-field;
+                sort-dir: PlaylistDetail.sort-dir;
+                playing-track-id: Player.vm.track.id;
+                playing-remote-id: Player.vm.track.file_path == "" ? Player.vm.track.remote_id : "";
+                cloud-rows: true;
+                cloud-entity-links: true;
+                cloud-single-click: false;
+                cloud-favorite-clickable: true;
+                cloud-playlist-editable: PlaylistDetail.cloud-owned;
+                cloud-playlist-reorderable: PlaylistDetail.cloud-owned;
+                reorder-enabled: PlaylistDetail.cloud-owned
+                    && PlaylistDetail.sort-field == "position"
+                    && PlaylistDetail.sort-dir != "desc"
+                    && PlaylistDetail.filter == "";
+                drag-source <=> PlaylistDetail.drag-source;
+                drop-slot <=> PlaylistDetail.drop-slot;
+
+                request-sort(field) => {
+                    PlaylistDetail.request-sort(field == "track_number" ? "position" : field);
+                }
+                play-cloud-row(id, index) => { PlaylistDetail.play-cloud-row(id, index); }
+                toggle-cloud-favorite(id, liked) => { CloudTrackActions.toggle-favorite(id, liked); }
+                remove-cloud-row(id) => { PlaylistDetail.remove-cloud-track(id); }
+                move-cloud-row(id, delta) => { PlaylistDetail.move-cloud-track(id, delta); }
+                request-blur-search => { MyLibrary.blur-search-tick += 1; }
+                reorder(from, to) => { PlaylistDetail.reorder(from, to); }
+            }
+
+            TrackListScrollbars {
+                x: 0; y: 0; width: 100%; height: 100%;
+                list-y: cloud-tl.absolute-position.y - cloud-body.absolute-position.y;
+                body-y: cloud-tl.body-y;
+                body-height: cloud-tl.body-height;
+                v-visible-height: cloud-tl.v-visible-height;
+                v-viewport-height: cloud-tl.v-viewport-height;
+                v-offset: cloud-tl.v-offset;
+                set-v-offset(o) => { cloud-tl.set-v-offset(o); }
+            }
+        }
+
+        tl := DraggableTrackList {
+            width: 100%;
+            height: 100%;
+            visible: !PlaylistDetail.cloud-collection;
+
+            rows: PlaylistDetail.tracks;
+            // Reorder only in insertion order: any other sort makes it ambiguous, a
+            // filter breaks the index → position mapping, and a smart playlist has no
+            // curated order to reorder into. The direction counts too — a reversed
+            // position sort would land every drop at the mirrored slot. `filter` is
+            // the page's one needle, mirrored onto this global by
+            // `ui::my_library::filter::dispatch`.
+            reorder-enabled: PlaylistDetail.sort-field == "position"
+                && PlaylistDetail.sort-dir != "desc"
+                && PlaylistDetail.filter == ""
+                && !PlaylistDetail.playlist.is_smart;
+            // On the global so Rust can abort an in-flight drag: refreshing `tracks`
+            // destroys the row holding the pointer grab, and a dead row never delivers
+            // the pointer-up that would clear these.
+            drag-source <=> PlaylistDetail.drag-source;
+            drop-slot <=> PlaylistDetail.drop-slot;
+
+            columns <=> PlaylistDetail.track-columns;
+
+            sort-field: PlaylistDetail.sort-field;
+            sort-dir: PlaylistDetail.sort-dir;
+            playing-track-id: Player.vm.track.id;
+            view-context: "playlist-detail";
+            current-playlist-id: PlaylistDetail.cloud-collection ? 0 : PlaylistDetail.playlist.id;
+            view-selected-ids: PlaylistDetail.selected-ids;
+
+            request-sort(f) => { PlaylistDetail.request-sort(f); }
+            play-row(id, idx) => { PlaylistDetail.play-row(id, idx); }
+            play-next(ids) => { PlaylistDetail.play-next(ids); }
+            add-to-queue(ids) => { PlaylistDetail.add-to-queue(ids); }
+            toggle-row-favorite(ids, on) => { PlaylistDetail.toggle-row-favorite(ids, on); }
+            select-row(idx, id, sh, ct) => { PlaylistDetail.select-row(idx, id, sh, ct); }
+            select-all => { PlaylistDetail.select-all(); }
+            clear-selection => { PlaylistDetail.clear-selection(); }
+            // A click in the track list blurs the band's SearchBar.
+            request-blur-search => { MyLibrary.blur-search-tick += 1; }
+            reorder(from, to) => { PlaylistDetail.reorder(from, to); }
+            remove-from-playlist(ids) => { PlaylistDetail.remove-track(ids); }
+            go-to-album(aid) => { PlaylistDetail.go-to-album(aid); }
+            go-to-artist(aid) => { PlaylistDetail.go-to-artist(aid); }
+            go-to-genre(gid) => { PlaylistDetail.go-to-genre(gid); }
+        }
+
+        if PlaylistDetail.playlist.track_count == 0 && !PlaylistDetail.cloud-collection: GridEmptyState {
+            icon: "music_note";
+            title: PlaylistDetail.playlist.is_smart
+                ? @tr("No matching tracks")
+                : @tr("No tracks yet");
+            body: PlaylistDetail.playlist.is_smart
+                ? @tr("No tracks match these rules.")
+                : @tr("Drag music files here, or add tracks via any track's overflow menu.");
+        }
+
+        if PlaylistDetail.playlist.track_count == 0 && PlaylistDetail.cloud-collection && !PlaylistDetail.loading: GridEmptyState {
+            icon: "music_note";
+            title: @tr("No tracks yet");
+            body: @tr("This NetEase playlist has no available tracks.");
+        }
+
+        // The rows are still coming: the header above is the grid card's facts, so the list says
+        // what it is waiting for rather than showing the empty state it would show for a playlist
+        // that really has nothing in it. Cleared past the column band, which stays visible.
+        if PlaylistDetail.loading: Text {
+            x: Theme.pad-lg;
+            y: Theme.track-header-h + Theme.pad-xs + Theme.pad-md;
+            text: @tr("Loading…");
+            color: Theme.subtext0;
+        }
+
+        // OS file-hover banner — routed here when the queue sheet is closed and this
+        // detail is open. Stacks above the empty state.
+        if !PlaylistDetail.cloud-collection && PlaylistDetail.is-drop-hovered && PlaylistDetail.playlist-id >= 0
+            && !PlaylistDetail.playlist.is_smart: Rectangle {
+            background: Theme.accent.with-alpha(0.16);
+            border-radius: Theme.radius-md;
+            border-width: 2px;
+            border-color: Theme.accent;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.pad-sm;
+                HorizontalLayout {
+                    alignment: center;
+                    MaterialIcon {
+                        name: "playlist_add";
+                        icon-size: 56px;
+                        icon-color: Theme.accent;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: @tr("Drop files to add to this playlist");
+                        color: Theme.text;
+                        font-size: Theme.font-size-lg;
+                        font-weight: 600;
+                    }
+                }
+            }
+        }
+    }
+
+    TrackListScrollbars {
+        x: 0; y: 0; width: 100%; height: 100%;
+        visible: !PlaylistDetail.cloud-collection;
+        list-y: tl.absolute-position.y - root.absolute-position.y;
+        body-y: tl.body-y;
+        body-height: tl.body-height;
+        v-visible-height: tl.v-visible-height;
+        v-viewport-height: tl.v-viewport-height;
+        v-offset: tl.v-offset;
+        set-v-offset(o) => { tl.set-v-offset(o); }
+    }
+
+    // **Sync with local.** Declared last so it paints over the list and its bar; the review's own
+    // markup is `SyncReviewPanel`, which is where its reasoning lives.
+    if PlaylistDetail.sync-open: SyncReviewPanel {
+        x: Theme.pad-lg;
+        y: Theme.pad-lg;
+        width: parent.width - 2 * Theme.pad-lg;
+        height: parent.height - 2 * Theme.pad-lg;
+    }
+}

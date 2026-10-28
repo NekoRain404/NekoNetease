@@ -1,0 +1,303 @@
+import { Theme } from "../theme.slint";
+import { MvPlayer } from "../globals/mv-player.slint";
+import { PopupHighlight } from "../globals/shell.slint";
+import { MenuItem } from "context-menu.slint";
+import { IconButton } from "icon-button.slint";
+import { MaterialIcon } from "material-icon.slint";
+import { PillOverflowMenu } from "pill-overflow-menu.slint";
+import { SliderTrack } from "slider-track.slint";
+
+// The full-window MV surface: the video under a title scrim and a transport bar. Mounted while
+// `MvPlayer.open` and either fullscreen or away from the MV's own page, so a closed player leaves
+// no image slot alive and the page's inline stage is what plays a video in the window.
+export component MvPlayerOverlay inherits Rectangle {
+    background: Theme.crust;
+
+    // The chrome fades out after the pointer has been still, so the video can fill the window.
+    // Each tick is 250 ms and ten of them are the ~2.5 s the controls linger.
+    property <bool> chrome-visible: true;
+    property <int> idle-ticks: 10;
+    // The quality menu is its own `PopupWindow`, so the pointer leaves the trigger while the
+    // viewer is choosing; the highlight global is what says the menu is still up.
+    property <bool> menu-open: PopupHighlight.id == "mv-quality";
+    property <bool> chrome-hovered: close-btn.has-hover || fullscreen-btn.has-hover
+        || play-btn.has-hover || quality-menu.hovered
+        || timeline.has-hover || volume-slider.has-hover;
+
+    // A local mirror because `changed` takes no path expression on a global.
+    property <bool> watched-fullscreen: MvPlayer.fullscreen;
+    changed watched-fullscreen => { root.wake(); }
+    changed menu-open => {
+        if (root.menu-open) {
+            root.wake();
+        }
+    }
+
+    public function wake() {
+        root.chrome-visible = true;
+        root.idle-ticks = 10;
+    }
+
+    // Idle is the only gate: a paused video fades its controls like a playing one, and any
+    // pointer movement, hover or open menu brings them back. A held thumb counts as activity —
+    // the bar sliding out from under the pointer mid-drag reads as the control being taken away.
+    Timer {
+        interval: 250ms;
+        running: root.chrome-visible && !root.chrome-hovered && !root.menu-open
+            && !timeline.pressed && !volume-slider.pressed;
+        triggered => {
+            if (root.idle-ticks > 0) {
+                root.idle-ticks -= 1;
+            }
+            if (root.idle-ticks == 0) {
+                root.chrome-visible = false;
+            }
+        }
+    }
+
+    // Opaque and covering, so nothing behind the video takes clicks. Movement here — the picture,
+    // the letterbox — is what brings faded chrome back.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        moved => { root.wake(); }
+    }
+
+    if MvPlayer.has-frame: Image {
+        source: MvPlayer.frame;
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+
+    if !MvPlayer.has-frame && MvPlayer.error == "": VerticalLayout {
+        alignment: center;
+        Text {
+            text: @tr("Loading video…");
+            color: Theme.overlay1;
+            font-size: Theme.font-size-md;
+            horizontal-alignment: center;
+        }
+    }
+
+    if MvPlayer.error != "": VerticalLayout {
+        alignment: center;
+        spacing: Theme.pad-sm;
+        Text {
+            text: @tr("This video could not be played");
+            color: Theme.text;
+            font-size: Theme.font-size-lg;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: MvPlayer.error;
+            color: Theme.overlay1;
+            font-size: Theme.font-size-sm;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // Title and the two window controls, on a scrim so the video reads through the gaps.
+    Rectangle {
+        y: 0;
+        width: 100%;
+        height: 64px;
+        background: Theme.crust.transparentize(0.55);
+        opacity: root.chrome-visible ? 1.0 : 0.0;
+        animate opacity { duration: Theme.dur-med; easing: ease-in-out; }
+
+        HorizontalLayout {
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            spacing: Theme.pad-sm;
+            alignment: start;
+
+            Text {
+                text: MvPlayer.title;
+                color: Theme.text;
+                font-size: Theme.hero-title-size;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+
+            quality-menu := PillOverflowMenu {
+                menu-id: "mv-quality";
+                label: root.quality-label();
+                icon: "";
+                min-menu-width: 120px;
+                tooltip-text: "";
+
+                MenuItem {
+                    label: "1080p";
+                    checked: MvPlayer.quality == 1080;
+                    clicked => {
+                        root.wake();
+                        MvPlayer.set-quality(1080);
+                    }
+                }
+                MenuItem {
+                    label: "720p";
+                    checked: MvPlayer.quality == 720;
+                    clicked => {
+                        root.wake();
+                        MvPlayer.set-quality(720);
+                    }
+                }
+                MenuItem {
+                    label: "480p";
+                    checked: MvPlayer.quality == 480;
+                    clicked => {
+                        root.wake();
+                        MvPlayer.set-quality(480);
+                    }
+                }
+                MenuItem {
+                    label: "240p";
+                    checked: MvPlayer.quality == 240;
+                    clicked => {
+                        root.wake();
+                        MvPlayer.set-quality(240);
+                    }
+                }
+            }
+
+            fullscreen-btn := IconButton {
+                icon: MvPlayer.fullscreen ? "minimize" : "crop_square";
+                diameter: 36px;
+                icon-size: 20px;
+                idle-fg: Theme.subtext0;
+                hover-fg: Theme.text;
+                tooltip-text: MvPlayer.fullscreen ? @tr("Exit full screen") : @tr("Full screen");
+                clicked => { MvPlayer.set-fullscreen(!MvPlayer.fullscreen); }
+            }
+
+            close-btn := IconButton {
+                icon: "close";
+                diameter: 36px;
+                icon-size: 20px;
+                idle-fg: Theme.subtext0;
+                hover-fg: Theme.text;
+                tooltip-text: @tr("Close");
+                clicked => { MvPlayer.close(); }
+            }
+        }
+    }
+
+    // Transport. Opaque rather than a scrim: `SliderTrack`'s seam mask is a solid stadium, so the
+    // surface under it has to be one colour, and the video simply shows through above it.
+    Rectangle {
+        y: root.height - self.height;
+        width: 100%;
+        height: 72px;
+        background: Theme.crust;
+        opacity: root.chrome-visible ? 1.0 : 0.0;
+        animate opacity { duration: Theme.dur-med; easing: ease-in-out; }
+
+        HorizontalLayout {
+            padding-left: Theme.pad-lg;
+            padding-right: Theme.pad-lg;
+            spacing: Theme.pad-md;
+            alignment: center;
+
+            VerticalLayout {
+            alignment: center;
+            play-btn := IconButton {
+                icon: MvPlayer.playing ? "pause" : "play_arrow";
+                filled: MvPlayer.playing;
+                diameter: 40px;
+                icon-size: 24px;
+                tooltip-text: MvPlayer.playing ? @tr("Pause") : @tr("Play");
+                clicked => { MvPlayer.toggle-play(); }
+            }
+
+            }
+            Text {
+                height: 24px;
+                text: Theme.format-duration(timeline.dragging
+                    ? round(timeline.drag-value * MvPlayer.duration-ms)
+                    : MvPlayer.position-ms);
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                min-width: 44px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            timeline := SliderTrack {
+                horizontal-stretch: 1;
+                min-width: 160px;
+                height: 24px;
+                value: root.progress();
+                // Faded chrome still hit-tests, so an invisible bar would swallow a click meant
+                // to wake the controls and jump the video somewhere the user never pointed at.
+                is-disabled: !root.chrome-visible || MvPlayer.duration-ms <= 0;
+                seam-mask-color: Theme.crust;
+                fill-color: Theme.accent;
+                // `surface1` nearly matches `crust`, which left the unfilled timeline invisible.
+                track-color: Theme.surface2;
+                committed(v) => {
+                    if (MvPlayer.duration-ms > 0) {
+                        MvPlayer.seek(round(v * MvPlayer.duration-ms));
+                    }
+                }
+            }
+
+            Text {
+                height: 24px;
+                text: Theme.format-duration(MvPlayer.duration-ms);
+                color: Theme.subtext0;
+                font-size: Theme.font-size-sm;
+                min-width: 44px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                MaterialIcon {
+                    name: MvPlayer.volume == 0 ? "volume_off" : "volume_up";
+                    icon-size: 18px;
+                    icon-color: Theme.subtext0;
+                }
+            }
+
+            volume-slider := SliderTrack {
+                width: 96px;
+                height: 24px;
+                value: MvPlayer.volume / 100.0;
+                seam-mask-color: Theme.crust;
+                track-color: Theme.surface2;
+                changed(v) => { MvPlayer.set-volume(round(v * 100)); }
+            }
+        }
+    }
+
+    // Above the faded chrome so the press that wakes it cannot also land on a control the viewer
+    // cannot see. Disabled while the chrome is up, where the real controls owe the hits.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: !root.chrome-visible;
+        moved => { root.wake(); }
+        // A press without movement would otherwise wake nothing and also reach no control.
+        clicked => { root.wake(); }
+    }
+
+    // A zero or absent duration (a live stream, or before the header is parsed) leaves the bar
+    // empty rather than dividing by it.
+    pure function progress() -> float {
+        if MvPlayer.duration-ms <= 0 {
+            return 0.0;
+        }
+        return clamp(MvPlayer.position-ms * 1.0 / MvPlayer.duration-ms, 0.0, 1.0);
+    }
+
+    // The tier labels are the endpoints' own `r` numbers, so they are the same string in every
+    // locale and never enter a catalogue.
+    pure function quality-label() -> string {
+        return "\{MvPlayer.quality}p";
+    }
+}

@@ -1,0 +1,139 @@
+//! Wire the `Updater.*` Slint callbacks to backend tasks.
+//!
+//! Five callbacks:
+//!
+//! - `Updater.check()` — manual "Check for Updates" button. The daily
+//!   task's check (`services::updater::run_check`), plus a visible error
+//!   and toast when it fails. Backend lives in [`check`].
+//! - `Updater.install()` — fires `services::updater::download_and_install`
+//!   on the tokio runtime. Progress writes flow back through
+//!   `upgrade_in_event_loop`. On success → `Updater.restart-needed=true`
+//!   + Installed event onto the channel. On failure → `Updater.error-message`
+//!   + Failed event. Backend lives in [`install`].
+//! - `Updater.restart()` — hands off to
+//!   `ui::window_chrome::request_respawn_and_quit`, which arms the respawn
+//!   flag and quits the event loop (or keeps the app up and toasts, if the
+//!   binary it would relaunch has gone). `shutdown::respawn_if_requested`
+//!   (already last step of `main()`) then relaunches, using the path
+//!   `spawn_install` recorded via `ui::window_chrome::set_respawn_exe` on a
+//!   successful install — captured before the swap, while the path still
+//!   pointed at the live binary.
+//! - `Updater.skip()` — persists `available-version` into
+//!   `settings.updates.skipped_release`. Clears
+//!   `Updater.update-available` locally so the panel repaints to the
+//!   "up to date" state.
+//! - `Updater.auto-check-changed(bool)` — persists the toggle.
+//!
+//! The [`paint`] submodule holds the shared UI-thread painters the check and
+//! install backends call back through, the daily task reaching them via
+//! [`check_painter`].
+
+mod check;
+mod install;
+mod paint;
+
+use std::rc::Rc;
+
+use slint::ComponentHandle;
+use tokio::sync::watch;
+
+use crate::ui::shell::notifications::NotificationsUi;
+use nekonetease_app::library;
+use nekonetease_app::services::updater::UpdaterEvent;
+use nekonetease_app::state::AppState;
+use nekonetease_core::error::describe;
+use nekonetease_ui::{AppWindow, NekoNeteaseUpdater, NotificationKind};
+
+use check::spawn_manual_check;
+use install::spawn_install;
+pub use paint::check_painter;
+
+/// Wire the five `Updater.*` callbacks on the `Updater` global. Must
+/// be called after `ui::settings::updater_settings::install` (which seeds the
+/// global's initial values).
+pub fn wire(
+    ui: &AppWindow,
+    state: &AppState,
+    notifications: &Rc<NotificationsUi>,
+    event_tx: &watch::Sender<Option<UpdaterEvent>>,
+) {
+    let updater = ui.global::<NekoNeteaseUpdater>();
+    let weak = ui.as_weak();
+
+    // ---- Updater.check ----
+    {
+        let state = state.clone();
+        let weak = weak.clone();
+        let event_tx = event_tx.clone();
+        updater.on_check(move || {
+            spawn_manual_check(state.clone(), weak.clone(), event_tx.clone());
+        });
+    }
+
+    // ---- Updater.install ----
+    {
+        let state = state.clone();
+        let weak = weak.clone();
+        let event_tx = event_tx.clone();
+        updater.on_install(move || {
+            spawn_install(state.clone(), weak.clone(), event_tx.clone());
+        });
+    }
+
+    // ---- Updater.restart ----
+    updater.on_restart(|| {
+        crate::ui::window_chrome::request_respawn_and_quit();
+    });
+
+    // ---- Updater.skip ----
+    {
+        let state = state.clone();
+        let weak = weak.clone();
+        let notifications = notifications.clone();
+        updater.on_skip(move || {
+            let version = weak
+                .upgrade()
+                .map(|ui| ui.global::<NekoNeteaseUpdater>().get_available_version().to_string())
+                .unwrap_or_default();
+            if version.is_empty() {
+                log::warn!("updater: skip clicked but available_version was empty");
+                return;
+            }
+            let state_for_disk = state.clone();
+            state.runtime.spawn_blocking(move || {
+                if let Err(e) =
+                    library::settings::updates::set_skipped_release(&state_for_disk.paths, version)
+                {
+                    log::warn!("updater: set_skipped_release: {}", describe(&e));
+                }
+            });
+            // Repaint the Settings → Updates panel to the "up to
+            // date" state so the user sees an immediate effect, and
+            // dismiss any still-visible "Update available" toast so the
+            // bottom-right matches the Settings panel.
+            if let Some(ui) = weak.upgrade() {
+                let g = ui.global::<NekoNeteaseUpdater>();
+                g.set_update_available(false);
+                g.set_up_to_date(true);
+            }
+            notifications.dismiss_by_kind(NotificationKind::InstallUpdate);
+        });
+    }
+
+    // ---- Updater.auto-check-changed ----
+    {
+        let state = state.clone();
+        updater.on_auto_check_changed(move |on| {
+            let state_for_disk = state.clone();
+            state.runtime.spawn_blocking(move || {
+                // Kicked inside the write and only on `Ok(())`: the loop re-reads the file on
+                // waking, so a kick over a failed write would wake it onto the old answer.
+                match library::settings::updates::set_auto_check_enabled(&state_for_disk.paths, on)
+                {
+                    Ok(()) => state_for_disk.auto_check_changed.bump(),
+                    Err(e) => log::warn!("updater: set_auto_check_enabled: {}", describe(&e)),
+                }
+            });
+        });
+    }
+}

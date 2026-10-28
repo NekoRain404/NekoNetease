@@ -1,0 +1,1018 @@
+use std::time::Duration;
+
+use nekonetease_core::error::AppError;
+use nekonetease_engine::player::engine::backend::OutputChoice;
+use nekonetease_playback::player::playback::output::{
+    Drive, ExclusiveTuning, OutputMode, RateFallback,
+};
+use nekonetease_testkit::{reading_env, with_env_set};
+// Only the desktop probes need it, and Windows has no desktop to ask.
+#[cfg(not(target_os = "windows"))]
+use nekonetease_testkit::with_env_var;
+
+use super::*;
+use crate::services::settings::{
+    ONBOARDING_VERSION, PausedDevice, TitlebarButtonStyle, WINDOW_BORDER_SYSTEM_COLOR, WindowBorder,
+};
+
+fn json_err(e: &serde_json::Error) -> AppError {
+    AppError::Validation(format!("json error: {e}"))
+}
+
+#[test]
+fn test_settings_default_for_missing_volume_fields() -> Result<(), AppError> {
+    let json = r#"{"theme_id": "catppuccin"}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert_eq!(settings.volume, 100);
+    assert!(!settings.playback.is_muted);
+    Ok(())
+}
+
+/// The field postdates every settings file already on disk, so a missing one has to mean "on" —
+/// the runtime side applies it to a player with nothing loaded, where defaulting off would make
+/// every upgrade start decoding in software until the user found the row.
+#[test]
+fn a_settings_file_from_before_hardware_decoding_keeps_it_on() -> Result<(), AppError> {
+    let settings: SettingsData =
+        serde_json::from_str(r#"{"volume": 42}"#).map_err(|e| json_err(&e))?;
+    assert!(settings.playback.hwdec_enabled);
+    Ok(())
+}
+
+#[test]
+fn a_stored_hardware_decoding_choice_reads_back() -> Result<(), AppError> {
+    let settings: SettingsData =
+        serde_json::from_str(r#"{"hwdec_enabled": false}"#).map_err(|e| json_err(&e))?;
+    assert!(!settings.playback.hwdec_enabled);
+    Ok(())
+}
+
+#[test]
+fn test_settings_deserializes_volume_fields() -> Result<(), AppError> {
+    let json = r#"{"volume": 42, "is_muted": true}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert_eq!(settings.volume, 42);
+    assert!(settings.playback.is_muted);
+    Ok(())
+}
+
+#[test]
+fn test_empty_json_uses_defaults() -> Result<(), AppError> {
+    let json = "{}";
+    let settings: SettingsData =
+        reading_env(|| serde_json::from_str(json)).map_err(|e| json_err(&e))?;
+    assert_eq!(settings.volume, 100);
+    assert!(!settings.playback.is_muted);
+    assert!(settings.playback.gapless_playback);
+    Ok(())
+}
+
+// The theme ids below are spelled as literals rather than read off the registry: they are what
+// `settings.json` stores, so renaming one strands every install that saved it.
+
+#[cfg(target_os = "windows")]
+#[test]
+fn a_fresh_windows_install_opens_on_fluent_following_the_app_mode() {
+    let settings = reading_env(SettingsData::default);
+
+    assert_eq!(
+        (
+            settings.theme_id.as_str(),
+            settings.theme_variant.as_str(),
+            settings.accent_color.as_str()
+        ),
+        ("windows-fluent", "system", "blue"),
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn a_fresh_install_on_a_desktop_without_a_theme_opens_on_catppuccin_mocha() {
+    let settings = with_env_var("XDG_CURRENT_DESKTOP", None, SettingsData::default);
+
+    assert_eq!(
+        (
+            settings.theme_id.as_str(),
+            settings.theme_variant.as_str(),
+            settings.accent_color.as_str()
+        ),
+        ("catppuccin", "mocha", "mauve"),
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fresh_kde_install_opens_on_breeze_following_the_system_scheme() {
+    let settings = with_env_var("XDG_CURRENT_DESKTOP", Some("KDE"), SettingsData::default);
+
+    assert_eq!(
+        (
+            settings.theme_id.as_str(),
+            settings.theme_variant.as_str(),
+            settings.accent_color.as_str()
+        ),
+        ("kde-breeze", "system", "blue"),
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fresh_gnome_install_opens_on_adwaita_following_the_system_scheme() {
+    let settings = with_env_var("XDG_CURRENT_DESKTOP", Some("GNOME"), SettingsData::default);
+
+    assert_eq!(
+        (
+            settings.theme_id.as_str(),
+            settings.theme_variant.as_str(),
+            settings.accent_color.as_str()
+        ),
+        ("gnome-adwaita", "system", "blue"),
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn only_a_fresh_kde_install_opens_on_the_native_titlebar() {
+    let native_titlebar_under = |desktop| {
+        with_env_var("XDG_CURRENT_DESKTOP", desktop, SettingsData::default)
+            .window
+            .use_native_titlebar
+    };
+
+    assert_eq!(
+        [
+            native_titlebar_under(Some("KDE")),
+            native_titlebar_under(Some("GNOME")),
+            native_titlebar_under(None)
+        ],
+        [true, false, false],
+    );
+}
+
+/// The tint's field default is per-desktop too, but it reaches only a file missing the key, so a
+/// fresh KDE install opened on the native titlebar with the tint off.
+#[cfg(target_os = "linux")]
+#[test]
+fn only_a_fresh_kde_install_tints_its_chrome_while_unfocused() {
+    let tint_under = |desktop| {
+        with_env_var("XDG_CURRENT_DESKTOP", desktop, SettingsData::default)
+            .layout
+            .match_unfocused_to_system_bg
+    };
+
+    assert_eq!(
+        [tint_under(Some("KDE")), tint_under(Some("GNOME")), tint_under(None)],
+        [true, false, false],
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fresh_install_takes_its_desktops_corner_radius() {
+    let radius_under =
+        |desktop| with_env_var("XDG_CURRENT_DESKTOP", desktop, SettingsData::default).corner_radius;
+
+    assert_eq!(
+        [radius_under(Some("KDE")), radius_under(Some("GNOME")), radius_under(None)],
+        [6, 15, 6]
+    );
+}
+
+/// Only a fresh install asks the desktop. A settings file without the key reads as
+/// `WindowFlags::default()`, so an existing KDE install keeps the titlebar it has.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_kde_settings_file_without_the_titlebar_key_keeps_the_custom_titlebar() -> Result<(), AppError>
+{
+    let settings: SettingsData = with_env_var("XDG_CURRENT_DESKTOP", Some("KDE"), || {
+        serde_json::from_str(r#"{"volume": 80}"#)
+    })
+    .map_err(|e| json_err(&e))?;
+
+    assert!(!settings.window.use_native_titlebar);
+    Ok(())
+}
+
+/// Every saved install carries this key, so renaming the field without an alias would reset each
+/// of them to the custom titlebar.
+#[test]
+fn a_saved_native_titlebar_reads_back() -> Result<(), AppError> {
+    let window: WindowFlags =
+        serde_json::from_str(r#"{"use_native_titlebar": true}"#).map_err(|e| json_err(&e))?;
+
+    assert!(window.use_native_titlebar);
+    Ok(())
+}
+
+#[test]
+fn a_fresh_install_draws_the_window_border() {
+    assert_eq!(WindowFlags::default().window_border, WindowBorder::Shown);
+}
+
+#[test]
+fn a_fresh_install_draws_the_window_border_in_the_system_color() {
+    assert_eq!(WindowFlags::default().window_border_color, WINDOW_BORDER_SYSTEM_COLOR);
+}
+
+/// A `settings.json` written before the border existed carries no key for it, and has to read as
+/// the default rather than as an install that turned the border off.
+#[test]
+fn a_settings_file_from_before_the_border_draws_it() -> Result<(), AppError> {
+    let window: WindowFlags =
+        serde_json::from_str(r#"{"use_native_titlebar": true}"#).map_err(|e| json_err(&e))?;
+
+    assert_eq!(window.window_border, WindowBorder::Shown);
+    Ok(())
+}
+
+/// Persisted as a name, the way the titlebar button tokens are, so a third state needs no schema
+/// change and a hand-edited file reads the way it is spelled.
+#[test]
+fn the_window_border_persists_as_a_token() -> Result<(), AppError> {
+    let hidden = serde_json::to_string(&WindowBorder::Hidden).map_err(|e| json_err(&e))?;
+
+    assert_eq!(hidden, r#""hidden""#);
+    Ok(())
+}
+
+#[test]
+fn a_hidden_window_border_reads_back_from_its_token() -> Result<(), AppError> {
+    let border: WindowBorder = serde_json::from_str(r#""hidden""#).map_err(|e| json_err(&e))?;
+
+    assert_eq!(border, WindowBorder::Hidden);
+    Ok(())
+}
+
+/// Its own field because the miniplayer draws captions under the native titlebar too, so an install
+/// that picked macOS lights for the titlebar keeps the miniplayer it already had.
+#[test]
+fn the_miniplayer_captions_do_not_inherit_the_titlebar_style() -> Result<(), AppError> {
+    let window: WindowFlags =
+        serde_json::from_str(r#"{"titlebar_button_style": "macos"}"#).map_err(|e| json_err(&e))?;
+
+    assert_eq!(window.mini_player_button_style, TitlebarButtonStyle::Standard);
+    Ok(())
+}
+
+/// Every caption style beside the token `settings.json` carries for it. A renamed variant changes
+/// its token, and a file holding the old one no longer parses.
+const CAPTION_STYLE_TOKENS: [(TitlebarButtonStyle, &str); 3] = [
+    (TitlebarButtonStyle::Standard, r#""standard""#),
+    (TitlebarButtonStyle::Macos, r#""macos""#),
+    (TitlebarButtonStyle::Kde, r#""kde""#),
+];
+
+#[test]
+fn every_caption_style_persists_as_its_token() -> Result<(), AppError> {
+    let written = CAPTION_STYLE_TOKENS
+        .iter()
+        .map(|(style, _)| serde_json::to_string(style))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| json_err(&e))?;
+
+    assert_eq!(written, CAPTION_STYLE_TOKENS.map(|(_, token)| token));
+    Ok(())
+}
+
+#[test]
+fn every_caption_style_reads_back_from_its_token() -> Result<(), AppError> {
+    let read = CAPTION_STYLE_TOKENS
+        .iter()
+        .map(|(_, token)| serde_json::from_str::<TitlebarButtonStyle>(token))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| json_err(&e))?;
+
+    assert_eq!(read, CAPTION_STYLE_TOKENS.map(|(style, _)| style));
+    Ok(())
+}
+
+#[test]
+fn a_fresh_install_keeps_the_miniplayer_on_flat_chrome() {
+    assert!(!BackdropFlags::default().mini_backdrop);
+}
+
+/// A shipped file carries the aurora key and not this one, and has to read as the miniplayer the
+/// install already had.
+#[test]
+fn a_settings_file_from_before_the_mini_backdrop_keeps_it_off() -> Result<(), AppError> {
+    let backdrop: BackdropFlags =
+        serde_json::from_str(r#"{"aurora_backdrop": false}"#).map_err(|e| json_err(&e))?;
+
+    assert!(!backdrop.mini_backdrop);
+    Ok(())
+}
+
+#[test]
+fn a_settings_file_from_before_the_hold_restores_no_full_player() -> Result<(), AppError> {
+    let settings: SettingsData =
+        reading_env(|| serde_json::from_str(r#"{"volume": 80}"#)).map_err(|e| json_err(&e))?;
+
+    assert_eq!(settings.full_player_geometry, None);
+    Ok(())
+}
+
+/// The names are what every `settings.json` closed from the miniplayer carries, so a renamed field
+/// drops the hold. A negative `x` is a window on a monitor left of the primary.
+#[test]
+fn a_held_full_player_reads_back_under_its_persisted_names() -> Result<(), AppError> {
+    // Integral values parse exactly; the slack only keeps the comparison honest about floats.
+    const TOLERANCE: f64 = 1e-9;
+    let json = r#"{"width": 1200, "height": 800, "position": {"x": -1920, "y": 40}}"#;
+
+    let held: FullPlayerGeometry = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    let Some(position) = held.position else {
+        return Err(AppError::Validation("the hold lost its position".to_owned()));
+    };
+    assert!(
+        (held.width - 1200.0).abs() < TOLERANCE
+            && (held.height - 800.0).abs() < TOLERANCE
+            && (position.x + 1920.0).abs() < TOLERANCE
+            && (position.y - 40.0).abs() < TOLERANCE,
+        "the hold read back as {held:?}"
+    );
+    Ok(())
+}
+
+// What a close on Wayland writes, where the window never learned its position.
+#[test]
+fn a_held_full_player_with_a_null_position_reads_back_unplaced() -> Result<(), AppError> {
+    let json = r#"{"width": 1200, "height": 800, "position": null}"#;
+
+    let held: FullPlayerGeometry = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    assert_eq!(held.position, None);
+    Ok(())
+}
+
+#[test]
+fn test_unknown_fields_silently_ignored() -> Result<(), AppError> {
+    // Forward compatibility: future settings versions may add new fields.
+    // Without deny_unknown_fields, old code should deserialize them fine.
+    let json = r#"{"volume": 80, "some_future_field": true, "another_new_thing": 42}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert_eq!(settings.volume, 80);
+    Ok(())
+}
+
+#[test]
+fn test_volume_clamped_to_max() -> Result<(), AppError> {
+    let json = r#"{"volume": 999}"#;
+    let mut settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    // Simulate the clamping that read_settings performs
+    settings.volume = settings.volume.min(nekonetease_engine::player::engine::state::MAX_VOLUME);
+    assert_eq!(settings.volume, nekonetease_engine::player::engine::state::MAX_VOLUME);
+    Ok(())
+}
+
+#[test]
+fn test_settings_roundtrip_volume_mute() -> Result<(), AppError> {
+    let settings = SettingsData {
+        volume: 42,
+        playback: PlaybackFlags { is_muted: true, ..PlaybackFlags::default() },
+        // `SettingsData::default()` reads the environment through its serde
+        // defaults, so it takes the same lock the mutating tests below do.
+        ..reading_env(SettingsData::default)
+    };
+    let json = serde_json::to_string(&settings).map_err(|e| json_err(&e))?;
+    let deserialized: SettingsData = serde_json::from_str(&json).map_err(|e| json_err(&e))?;
+    assert_eq!(deserialized.volume, 42);
+    assert!(deserialized.playback.is_muted);
+    Ok(())
+}
+
+#[test]
+fn test_settings_roundtrip_playback_speed() -> Result<(), AppError> {
+    let settings = SettingsData {
+        playback: PlaybackFlags { playback_speed: 1.5, ..PlaybackFlags::default() },
+        ..reading_env(SettingsData::default)
+    };
+    let json = serde_json::to_string(&settings).map_err(|e| json_err(&e))?;
+    let deserialized: SettingsData = serde_json::from_str(&json).map_err(|e| json_err(&e))?;
+    assert!((deserialized.playback.playback_speed - 1.5).abs() < f64::EPSILON);
+    Ok(())
+}
+
+#[test]
+fn test_playback_speed_defaults_when_missing() -> Result<(), AppError> {
+    // Settings files written before this field existed must still load,
+    // defaulting the speed to 1.0 (the `#[serde(default)]` on PlaybackFlags).
+    let json = r#"{"volume": 80}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!((settings.playback.playback_speed - 1.0).abs() < f64::EPSILON);
+    Ok(())
+}
+
+#[test]
+fn test_corner_radius_clamped_to_max() -> Result<(), AppError> {
+    let json = r#"{"corner_radius": 999}"#;
+    let mut settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    settings.corner_radius = settings.corner_radius.min(MAX_CORNER_RADIUS);
+    assert_eq!(settings.corner_radius, 15);
+    Ok(())
+}
+
+#[test]
+fn test_corner_radius_default_is_an_os_preset() -> Result<(), AppError> {
+    // Set membership rather than one value, so the test holds on every host OS; which desktop
+    // gets which preset is `desktop`'s own test.
+    let json = "{}";
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!(
+        matches!(settings.corner_radius, 6 | 8 | 10 | 15),
+        "corner_radius default {} is not one of the OS-aware presets {{6, 8, 10, 15}}",
+        settings.corner_radius
+    );
+    Ok(())
+}
+
+#[test]
+fn test_resume_on_startup_defaults_false() -> Result<(), AppError> {
+    let json = "{}";
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!(!settings.playback.resume_on_startup);
+    Ok(())
+}
+
+/// `MotionFlags` is `#[serde(flatten)]`ed like every other substruct, so its key sits at
+/// the top level of `settings.json` — a nested object here would be a shape change on
+/// installs that already have a file.
+#[test]
+fn test_skip_startup_animation_defaults_false_and_reads_a_top_level_key() -> Result<(), AppError> {
+    let absent: SettingsData = serde_json::from_str("{}").map_err(|e| json_err(&e))?;
+    assert!(!absent.motion.skip_startup_animation);
+
+    let present: SettingsData =
+        serde_json::from_str(r#"{"skip_startup_animation": true}"#).map_err(|e| json_err(&e))?;
+    assert!(present.motion.skip_startup_animation);
+    Ok(())
+}
+
+#[test]
+fn test_view_sort_roundtrip() -> Result<(), AppError> {
+    let sort = ViewSort { field: "title".to_owned(), dir: SortDir::Desc };
+    let json = serde_json::to_string(&sort).map_err(|e| json_err(&e))?;
+    let deserialized: ViewSort = serde_json::from_str(&json).map_err(|e| json_err(&e))?;
+    assert_eq!(deserialized.field, "title");
+    assert!(matches!(deserialized.dir, SortDir::Desc));
+    Ok(())
+}
+
+#[test]
+fn test_sort_dir_token_roundtrip() {
+    // `as_str` and `from_token` are the bridge between the persisted
+    // `SortDir` enum and the Slint `sort-dir` string property.
+    assert_eq!(SortDir::Asc.as_str(), "asc");
+    assert_eq!(SortDir::Desc.as_str(), "desc");
+    assert!(matches!(SortDir::from_token("asc"), SortDir::Asc));
+    assert!(matches!(SortDir::from_token("desc"), SortDir::Desc));
+    // Anything other than the exact `"desc"` token falls back to `Asc`.
+    assert!(matches!(SortDir::from_token(""), SortDir::Asc));
+    assert!(matches!(SortDir::from_token("DESC"), SortDir::Asc));
+    assert!(matches!(SortDir::from_token("garbage"), SortDir::Asc));
+    // Round-trip both directions through their token form. `SortDir` has no
+    // `PartialEq`, so compare the tokens rather than the variants — `as_str` is
+    // injective (pinned just above), so a wrong variant round-trips to a
+    // different token, and the failure prints the tokens instead of an opaque
+    // `Discriminant(..)`.
+    for dir in [SortDir::Asc, SortDir::Desc] {
+        assert_eq!(SortDir::from_token(dir.as_str()).as_str(), dir.as_str());
+    }
+}
+
+#[test]
+fn test_sort_dir_requires_explicit_value() -> Result<(), AppError> {
+    // ViewSort does not have #[serde(default)] on dir, so it must be provided
+    let json = r#"{"field": "artist"}"#;
+    let result: Result<ViewSort, _> = serde_json::from_str(json);
+    assert!(result.is_err());
+
+    // With explicit dir it works
+    let json = r#"{"field": "artist", "dir": "asc"}"#;
+    let sort: ViewSort = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!(matches!(sort.dir, SortDir::Asc));
+    Ok(())
+}
+
+#[test]
+fn test_column_widths_defaults() {
+    let cw = ColumnWidths::default();
+    assert!((cw.number - 56.0).abs() < f64::EPSILON);
+    assert!((cw.title - 320.0).abs() < f64::EPSILON);
+    assert!((cw.artist - 200.0).abs() < f64::EPSILON);
+    assert!((cw.album - 220.0).abs() < f64::EPSILON);
+    assert!((cw.genre - 140.0).abs() < f64::EPSILON);
+    assert!((cw.year - 72.0).abs() < f64::EPSILON);
+    assert!((cw.length - 88.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_column_widths_partial_json() -> Result<(), AppError> {
+    let json = r#"{"artist": 300.0}"#;
+    let cw: ColumnWidths = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!((cw.artist - 300.0).abs() < f64::EPSILON);
+    // Other fields should use defaults
+    assert!((cw.number - 56.0).abs() < f64::EPSILON);
+    assert!((cw.title - 320.0).abs() < f64::EPSILON);
+    assert!((cw.length - 88.0).abs() < f64::EPSILON);
+    Ok(())
+}
+
+#[test]
+fn test_theme_preference_roundtrip() -> Result<(), AppError> {
+    let pref = ThemePreference {
+        variant: "mocha".to_owned(),
+        accent: "mauve".to_owned(),
+        last_static_accent: Some("mauve".to_owned()),
+    };
+    let json = serde_json::to_string(&pref).map_err(|e| json_err(&e))?;
+    let deserialized: ThemePreference = serde_json::from_str(&json).map_err(|e| json_err(&e))?;
+    assert_eq!(deserialized.variant, "mocha");
+    assert_eq!(deserialized.accent, "mauve");
+    assert_eq!(deserialized.last_static_accent.as_deref(), Some("mauve"));
+    // Backward compat: older settings.json without `last_static_accent` deserializes to None.
+    let legacy: ThemePreference = serde_json::from_str(r#"{"variant":"mocha","accent":"mauve"}"#)
+        .map_err(|e| json_err(&e))?;
+    assert!(legacy.last_static_accent.is_none());
+    Ok(())
+}
+
+#[test]
+fn test_locale_default_is_nonempty() -> Result<(), AppError> {
+    let json = "{}";
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!(!settings.locale.is_empty(), "default locale must not be empty");
+    Ok(())
+}
+
+#[test]
+fn test_parse_language_code_utf8() {
+    assert_eq!(parse_language_code("en_US.UTF-8"), Some("en".to_owned()));
+    assert_eq!(parse_language_code("de_DE.UTF-8"), Some("de".to_owned()));
+}
+
+#[test]
+fn test_parse_language_code_no_encoding() {
+    assert_eq!(parse_language_code("en_US"), Some("en".to_owned()));
+    assert_eq!(parse_language_code("de_DE"), Some("de".to_owned()));
+}
+
+#[test]
+fn test_parse_language_code_bcp47() {
+    assert_eq!(parse_language_code("en-US"), Some("en".to_owned()));
+    assert_eq!(parse_language_code("de-DE"), Some("de".to_owned()));
+}
+
+#[test]
+fn test_parse_language_code_bare() {
+    assert_eq!(parse_language_code("en"), Some("en".to_owned()));
+    assert_eq!(parse_language_code("de"), Some("de".to_owned()));
+}
+
+#[test]
+fn test_parse_language_code_invalid() {
+    assert_eq!(parse_language_code("C"), None);
+    assert_eq!(parse_language_code(""), None);
+    assert_eq!(parse_language_code("POSIX"), None);
+    assert_eq!(parse_language_code("123"), None);
+}
+
+#[test]
+fn test_parse_language_code_drops_a_modifier() {
+    assert_eq!(parse_language_code("de@euro"), Some("de".to_owned()));
+    assert_eq!(parse_language_code("ca_ES.UTF-8@valencia"), Some("ca".to_owned()));
+}
+
+#[test]
+fn test_parse_region_code_upper_cases_either_spelling() {
+    assert_eq!(parse_region_code("pt_BR.UTF-8"), Some("BR".to_owned()));
+    assert_eq!(parse_region_code("pt-br"), Some("BR".to_owned()));
+    assert_eq!(parse_region_code("pt_PT@euro"), Some("PT".to_owned()));
+}
+
+#[test]
+fn test_parse_region_code_absent() {
+    assert_eq!(parse_region_code("pt"), None);
+    assert_eq!(parse_region_code("pt.UTF-8"), None);
+    assert_eq!(parse_region_code("pt@euro"), None);
+}
+
+/// Runs `body` with only `set` present among the four variables
+/// `detect_os_locale` consults, listed here in the order it consults them.
+///
+/// Takes the overrides rather than a bare closure so it owns the mutation, like
+/// its `with_env_var` siblings — which is what leaves no `unsafe` in this file.
+fn with_locale_env<F: FnOnce() -> R, R>(set: &[(&str, &str)], body: F) -> R {
+    with_env_set(&["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"], set, body)
+}
+
+#[test]
+fn test_detect_os_locale_supported_locale() {
+    with_locale_env(&[("LC_ALL", "de_DE.UTF-8")], || {
+        assert_eq!(detect_os_locale(), Some("de".to_owned()));
+    });
+}
+
+#[test]
+fn test_detect_os_locale_unsupported_locale_returns_none() {
+    // "ja" is a valid ISO code but not in SUPPORTED_LOCALES.
+    with_locale_env(&[("LC_ALL", "ja_JP.UTF-8")], || {
+        assert_eq!(detect_os_locale(), None);
+    });
+}
+
+#[test]
+fn test_detect_os_locale_picks_the_brazilian_catalog_however_the_host_spells_it() {
+    for (var, raw) in [
+        ("LC_ALL", "pt_BR.UTF-8"),
+        ("LANG", "pt_br.utf8"),
+        // The BCP 47 form, which is what Windows hands back.
+        ("LC_MESSAGES", "pt-BR"),
+        ("LANGUAGE", "pt_BR:pt"),
+    ] {
+        with_locale_env(&[(var, raw)], || {
+            assert_eq!(detect_os_locale(), Some("pt_BR".to_owned()), "{var}={raw}");
+        });
+    }
+}
+
+#[test]
+fn test_detect_os_locale_sends_every_other_portuguese_region_to_pt() {
+    for raw in ["pt_PT.UTF-8", "pt_PT@euro", "pt-AO", "pt_MZ.UTF-8", "pt"] {
+        with_locale_env(&[("LC_ALL", raw)], || {
+            assert_eq!(detect_os_locale(), Some("pt".to_owned()), "LC_ALL={raw}");
+        });
+    }
+}
+
+/// Ukraine's country code is `UA` and its language `uk`, so a host there spells both, and only the
+/// language picks the catalogue: a Russian speaker in Ukraine keeps Russian.
+#[test]
+fn test_detect_os_locale_takes_the_language_and_not_the_country() {
+    for (raw, expected) in
+        [("uk_UA.UTF-8", "uk"), ("uk-UA", "uk"), ("uk", "uk"), ("ru_UA.UTF-8", "ru")]
+    {
+        with_locale_env(&[("LC_ALL", raw)], || {
+            assert_eq!(detect_os_locale(), Some(expected.to_owned()), "LC_ALL={raw}");
+        });
+    }
+}
+
+#[test]
+fn test_detect_system_locale_raw_language_var() {
+    // GNU LANGUAGE takes precedence over LC_* vars
+    with_locale_env(&[("LANGUAGE", "de:en"), ("LC_ALL", "en_US.UTF-8")], || {
+        assert_eq!(detect_system_locale_raw(), Some("de".to_owned()));
+    });
+}
+
+#[test]
+fn test_detect_system_locale_raw_language_skips_empty_and_c() {
+    with_locale_env(&[("LANGUAGE", "C::POSIX:de:en")], || {
+        assert_eq!(detect_system_locale_raw(), Some("de".to_owned()));
+    });
+}
+
+#[test]
+fn test_detect_system_locale_raw_falls_through_to_lc_all() {
+    // No LANGUAGE set, should fall through to LC_ALL
+    with_locale_env(&[("LC_ALL", "en_US.UTF-8")], || {
+        assert_eq!(detect_system_locale_raw(), Some("en_US.UTF-8".to_owned()));
+    });
+}
+
+#[test]
+fn test_detect_os_locale_language_picks_first_supported() {
+    // Only LANGUAGE's first usable entry is read, so whatever follows it is never consulted.
+    with_locale_env(&[("LANGUAGE", "de:en")], || {
+        assert_eq!(detect_os_locale(), Some("de".to_owned()));
+    });
+}
+
+#[test]
+fn test_locale_roundtrip() -> Result<(), AppError> {
+    let settings = SettingsData {
+        locale: "fr".to_owned(),
+        // The locale tests above clear and set exactly the four variables
+        // `default_locale()` consults, so this read has to be under the lock too.
+        ..reading_env(SettingsData::default)
+    };
+    let json = serde_json::to_string(&settings).map_err(|e| json_err(&e))?;
+    let deserialized: SettingsData = serde_json::from_str(&json).map_err(|e| json_err(&e))?;
+    assert_eq!(deserialized.locale, "fr");
+    Ok(())
+}
+
+#[test]
+fn test_replaygain_defaults_when_absent() -> Result<(), AppError> {
+    // An older settings.json (written before ReplayGain existed) deserializes to
+    // the inert defaults: off, "album" mode, 0 dB preamp, prevent-clipping on.
+    let json = r#"{"theme_id": "catppuccin"}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!(!settings.replaygain.rg_enabled);
+    assert_eq!(settings.replaygain.rg_mode, "album");
+    assert!((settings.replaygain.rg_preamp - 0.0).abs() < f32::EPSILON);
+    assert!(settings.replaygain.rg_prevent_clipping);
+    Ok(())
+}
+
+#[test]
+fn test_replaygain_roundtrip() -> Result<(), AppError> {
+    let settings = SettingsData {
+        replaygain: ReplayGainFlags {
+            rg_enabled: true,
+            rg_mode: "track".to_owned(),
+            rg_preamp: -3.0,
+            rg_prevent_clipping: false,
+        },
+        ..reading_env(SettingsData::default)
+    };
+    let json = serde_json::to_string(&settings).map_err(|e| json_err(&e))?;
+    let deserialized: SettingsData = serde_json::from_str(&json).map_err(|e| json_err(&e))?;
+    assert!(deserialized.replaygain.rg_enabled);
+    assert_eq!(deserialized.replaygain.rg_mode, "track");
+    assert!((deserialized.replaygain.rg_preamp - (-3.0)).abs() < f32::EPSILON);
+    assert!(!deserialized.replaygain.rg_prevent_clipping);
+    Ok(())
+}
+
+/// `0` is what a file written before the card existed deserializes to, and it is the only value
+/// that has to mean "owed". The comparison is `<` rather than `!=` so an install carrying a
+/// revision from a *newer* build — a downgrade, or a shared home directory — is left alone rather
+/// than shown a card it has already seen.
+#[test]
+fn the_welcome_card_is_owed_only_below_the_current_revision() {
+    assert!(OnboardingFlags { onboarding_version: 0 }.needs_onboarding());
+    assert!(!OnboardingFlags { onboarding_version: ONBOARDING_VERSION }.needs_onboarding());
+    assert!(!OnboardingFlags { onboarding_version: ONBOARDING_VERSION + 1 }.needs_onboarding());
+}
+
+/// The field is flattened, so an install written before the card existed has no key at all — and
+/// that absence is what has to read as "never seen" rather than as a parse failure.
+#[test]
+fn an_older_settings_file_is_owed_the_welcome_card() -> Result<(), AppError> {
+    let json = r#"{"theme_id": "catppuccin"}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    assert_eq!(settings.onboarding.onboarding_version, 0);
+    assert!(settings.onboarding.needs_onboarding());
+    Ok(())
+}
+
+/// The tray is the one deliberate exception to defaults-off, and what makes it safe is that it
+/// reaches nobody who already has a `settings.json`: every field serializes, so a file from any
+/// previous build spells `tray_enabled` and keeps its own answer.
+#[test]
+fn the_tray_ships_on_but_never_overrides_a_saved_answer() -> Result<(), AppError> {
+    assert!(reading_env(SettingsData::default).tray.tray_enabled);
+
+    let json = r#"{"theme_id": "catppuccin", "tray_enabled": false}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+    assert!(!settings.tray.tray_enabled);
+
+    // The window still closes to a quit unless asked otherwise, tray or no tray.
+    assert!(!reading_env(SettingsData::default).tray.close_to_tray);
+    Ok(())
+}
+
+/// Two of the three ship off and one ships on, so a derived `Default` would be right about the
+/// feature and the lookup and silently wrong about the romanization. A sheet in a script the
+/// reader cannot sound out is the whole reason that one is on.
+#[test]
+fn the_lyrics_switches_ship_as_two_off_and_one_on() {
+    let lyrics = reading_env(SettingsData::default).lyrics;
+
+    assert!(!lyrics.lyrics_enabled, "the column opens on Up Next");
+    assert!(!lyrics.lyrics_online_enabled, "an outbound feature is opt-in");
+    assert!(lyrics.lyrics_romanization_shown);
+}
+
+#[test]
+fn the_lyrics_switches_take_their_defaults_from_a_file_that_predates_them() -> Result<(), AppError>
+{
+    // They are flattened into the same object as every other key, so an older `settings.json` is
+    // missing all three rather than carrying an empty section.
+    let json = r#"{"theme_id": "catppuccin"}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    assert!(!settings.lyrics.lyrics_enabled);
+    assert!(!settings.lyrics.lyrics_online_enabled);
+    assert!(settings.lyrics.lyrics_romanization_shown);
+    Ok(())
+}
+
+/// v0.13.0 saved the switch as the column preference it grew out of, and an install that had
+/// lyrics showing must not upgrade to Up Next.
+#[test]
+fn a_settings_file_from_0_13_keeps_lyrics_switched_on() -> Result<(), AppError> {
+    let json = r#"{"theme_id": "catppuccin", "lyrics_panel_shown": true}"#;
+    let settings: SettingsData =
+        reading_env(|| serde_json::from_str(json)).map_err(|e| json_err(&e))?;
+
+    assert!(settings.lyrics.lyrics_enabled);
+    Ok(())
+}
+
+#[test]
+fn the_lyrics_switch_is_saved_under_its_current_name() -> Result<(), AppError> {
+    let flags = LyricsFlags { lyrics_enabled: true, ..LyricsFlags::default() };
+
+    let saved = serde_json::to_value(&flags).map_err(|e| json_err(&e))?;
+
+    assert_eq!(saved.get("lyrics_enabled"), Some(&serde_json::Value::Bool(true)));
+    assert_eq!(saved.get("lyrics_panel_shown"), None);
+    Ok(())
+}
+
+#[test]
+fn the_romanization_ships_on_but_never_overrides_a_saved_answer() -> Result<(), AppError> {
+    // The direction a default-on field goes wrong: a reader that fills the default in over a
+    // saved `false` turns the row back on at every launch.
+    let json = r#"{"theme_id": "catppuccin", "lyrics_romanization_shown": false}"#;
+    let settings: SettingsData = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    assert!(!settings.lyrics.lyrics_romanization_shown);
+    Ok(())
+}
+
+/// A one-shot marker ships false, and the direction it fails is re-running the sweep on every
+/// launch: an install that has already had its backfill would queue the whole library for a
+/// re-parse each time the default landed over the saved answer.
+#[test]
+fn the_tag_backfill_marker_ships_unset_and_survives_being_set() -> Result<(), AppError> {
+    assert!(!reading_env(SettingsData::default).library.tags_backfilled);
+
+    let predating = r#"{"theme_id": "catppuccin"}"#;
+    let settings: SettingsData = serde_json::from_str(predating).map_err(|e| json_err(&e))?;
+    assert!(!settings.library.tags_backfilled, "an older file has never had the pass");
+
+    let recorded = r#"{"theme_id": "catppuccin", "tags_backfilled": true}"#;
+    let settings: SettingsData = serde_json::from_str(recorded).map_err(|e| json_err(&e))?;
+    assert!(settings.library.tags_backfilled);
+    Ok(())
+}
+
+/// The Output card persists each pick through `set_output_choice`, and the boot hands the engine
+/// what `output_choice` reads back off disk, so every part of a choice has to survive the trip.
+/// A part that doesn't comes back at its default on the next launch, silently.
+#[test]
+fn an_output_choice_comes_back_from_settings_json_whole() -> Result<(), AppError> {
+    let choice = OutputChoice {
+        mode: OutputMode::Exclusive,
+        device: Some("{0.0.0.00000000}.{a-test-endpoint}".to_owned()),
+        tuning: ExclusiveTuning::new(Duration::from_millis(50), Drive::Polling),
+        hardware_volume: true,
+        rate_fallback: RateFallback::Resample,
+    };
+    let mut flags = OutputFlags::default();
+    flags.set_output_choice(&choice);
+
+    let json = serde_json::to_string(&flags).map_err(|e| json_err(&e))?;
+    let read: OutputFlags = serde_json::from_str(&json).map_err(|e| json_err(&e))?;
+
+    assert_eq!(read.output_choice(), choice);
+    Ok(())
+}
+
+/// A hand-edited period reaches the claim held to the range a claim asks for, rather than as a
+/// period no device keeps up with or a stop that reads as a hang.
+#[test]
+fn a_hand_edited_period_is_held_to_the_claims_range() -> Result<(), AppError> {
+    let rows = [
+        (r#"{"output_period_ms": 0}"#, ExclusiveTuning::MIN_PERIOD),
+        (r#"{"output_period_ms": 20}"#, Duration::from_millis(20)),
+        (r#"{"output_period_ms": 5000}"#, ExclusiveTuning::MAX_PERIOD),
+    ];
+    for (json, expected) in rows {
+        let flags: OutputFlags = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+        assert_eq!(flags.output_choice().tuning.period, expected, "{json}");
+    }
+    Ok(())
+}
+
+/// Hardware volume moves the device's system volume, so a settings file from before it must not
+/// read as asking for it.
+#[test]
+fn a_settings_file_from_before_hardware_volume_leaves_it_off() -> Result<(), AppError> {
+    let json = r#"{"output_mode": "exclusive"}"#;
+    let flags: OutputFlags = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    assert!(!flags.output_choice().hardware_volume);
+    Ok(())
+}
+
+/// A file from before the setting reads as what every claim did then: a rate the device lacks
+/// hands it back and plays through the system mixer.
+#[test]
+fn a_settings_file_from_before_the_rate_fallback_plays_through_the_mixer() -> Result<(), AppError> {
+    let json = r#"{"output_mode": "exclusive"}"#;
+    let flags: OutputFlags = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    assert_eq!(flags.output_choice().rate_fallback, RateFallback::Shared);
+    Ok(())
+}
+
+/// A file from before the setting reads as what every pause did then: the claim is held.
+#[test]
+fn a_settings_file_from_before_the_paused_device_keeps_it() -> Result<(), AppError> {
+    let json = r#"{"output_mode": "exclusive"}"#;
+    let flags: OutputFlags = serde_json::from_str(json).map_err(|e| json_err(&e))?;
+
+    assert_eq!(flags.output_paused_device, PausedDevice::Keep);
+    Ok(())
+}
+
+/// The tokens are what every saved file holds, so renaming a variant would turn each of those back
+/// into the default on the next launch, silently.
+#[test]
+fn the_rate_fallback_is_written_and_read_by_its_token() -> Result<(), AppError> {
+    let rows = [(RateFallback::Shared, "shared"), (RateFallback::Resample, "resample")];
+    for (fallback, token) in rows {
+        let flags = OutputFlags { output_rate_fallback: fallback, ..OutputFlags::default() };
+        let written = serde_json::to_value(&flags).map_err(|e| json_err(&e))?;
+        let read: OutputFlags =
+            serde_json::from_value(serde_json::json!({ "output_rate_fallback": token }))
+                .map_err(|e| json_err(&e))?;
+
+        assert_eq!(
+            (written["output_rate_fallback"].clone(), read.output_rate_fallback),
+            (serde_json::json!(token), fallback),
+            "{token}"
+        );
+    }
+    Ok(())
+}
+
+/// The mode's token, held for the same reason as the rate fallback's: an exclusive install that
+/// read back as shared would quietly stop claiming its device.
+#[test]
+fn the_output_mode_is_written_and_read_by_its_token() -> Result<(), AppError> {
+    let rows = [(OutputMode::Shared, "shared"), (OutputMode::Exclusive, "exclusive")];
+    for (mode, token) in rows {
+        let flags = OutputFlags { output_mode: mode, ..OutputFlags::default() };
+        let written = serde_json::to_value(&flags).map_err(|e| json_err(&e))?;
+        let read: OutputFlags = serde_json::from_value(serde_json::json!({ "output_mode": token }))
+            .map_err(|e| json_err(&e))?;
+
+        assert_eq!(
+            (written["output_mode"].clone(), read.output_mode),
+            (serde_json::json!(token), mode),
+            "{token}"
+        );
+    }
+    Ok(())
+}
+
+/// The long pause's token, held for the same reason as the rate fallback's.
+#[test]
+fn the_paused_device_is_written_and_read_by_its_token() -> Result<(), AppError> {
+    let rows = [(PausedDevice::Keep, "keep"), (PausedDevice::Release, "release")];
+    for (key, token) in rows {
+        let written = serde_json::to_value(key).map_err(|e| json_err(&e))?;
+        let read: PausedDevice =
+            serde_json::from_value(serde_json::json!(token)).map_err(|e| json_err(&e))?;
+
+        assert_eq!((written, read), (serde_json::json!(token), key), "{token}");
+    }
+    Ok(())
+}
+
+/// The Output card's toggle writes the token and reads it back, and the engine is handed the same
+/// reading, so the two directions have to agree for both positions.
+#[test]
+fn the_paused_device_toggle_comes_back_as_it_was_set() {
+    for release in [false, true] {
+        let token = PausedDevice::from_toggle(release);
+
+        assert_eq!(token.releases(), release, "{token:?}");
+    }
+}
+
+/// What a downgrade leaves: a caption style a newer build added, beside settings this one knows.
+/// The file is flat, every flag struct flattened into it, so this is the shape the load has to
+/// reset one setting in.
+#[test]
+fn a_token_a_newer_build_wrote_resets_only_its_own_setting() -> Result<(), AppError> {
+    let tmp = tempfile::tempdir()?;
+    let paths = nekonetease_core::config::Paths::rooted_at(tmp.path().to_path_buf());
+    paths.create_dirs()?;
+    let json = r#"{"volume": 40, "titlebar_button_style": "a_newer_style",
+        "always_on_top": true, "output_mode": "exclusive"}"#;
+    std::fs::write(&paths.settings_path, json)?;
+
+    let settings = reading_env(|| crate::services::settings::read_settings(&paths))?;
+
+    let read = (
+        settings.volume,
+        settings.window.titlebar_button_style,
+        settings.window.always_on_top,
+        settings.output.output_mode,
+    );
+    assert_eq!(
+        read,
+        (40, TitlebarButtonStyle::Standard, true, OutputMode::Exclusive),
+        "(volume, caption style, always on top, output mode)"
+    );
+    Ok(())
+}
