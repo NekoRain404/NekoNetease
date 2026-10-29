@@ -215,6 +215,12 @@ pub(in crate::ui) fn open_mv(ui: &AppWindow, state: &AppState, remote_id: String
         log::warn!("cloud_mvs::open_mv: invalid NetEase MV ID");
         return;
     };
+    // The rail opens the next video over the one playing: leaving the previous stream running
+    // would play it under a page describing the one the viewer picked. Closing does not spend
+    // the ticket — the new open resolves its own source.
+    if ui.global::<MvPlayer>().get_open() {
+        ui.global::<MvPlayer>().invoke_close();
+    }
     let request = MV_DETAIL_REQUEST.fetch_add(1, Ordering::Relaxed) + 1;
     let thread_request = MV_THREAD_REQUEST.fetch_add(1, Ordering::Relaxed) + 1;
     let similar_request = MV_SIMILAR_REQUEST.fetch_add(1, Ordering::Relaxed) + 1;

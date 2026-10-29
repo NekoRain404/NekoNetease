@@ -6,51 +6,12 @@ import { Comments } from "../../globals/comments.slint";
 import { PopupHighlight } from "../../globals/shell.slint";
 import { CommentsView } from "../comments/comments-view.slint";
 import { MvSimilarRail } from "mv-similar-rail.slint";
-import { MenuItem } from "../../components/context-menu.slint";
 import { IconButton } from "../../components/icon-button.slint";
-import { MaterialIcon } from "../../components/material-icon.slint";
 import { MetaChip } from "../../components/meta-chip.slint";
-import { PillOverflowMenu } from "../../components/pill-overflow-menu.slint";
+import { MvQualityMenu } from "../../components/mv-quality-menu.slint";
+import { MvVolume } from "../../components/mv-volume.slint";
 import { SliderTrack } from "../../components/slider-track.slint";
 import { ActionPill, PillButton } from "../../components/action-pill.slint";
-
-// The volume control, kept as one component so the transport can read whether its thumb is held:
-// an id declared inside an `if` is unreadable from outside it. Compact still mounts the root, at
-// zero width, because the transport's hover and idle gates name it unconditionally.
-component MvVolume inherits Rectangle {
-    in property <bool> compact: false;
-    in property <float> value;
-    in property <bool> slider-enabled: true;
-    callback changed(float);
-
-    out property <bool> active: slider.has-hover || slider.pressed;
-
-    width: root.compact ? 0px : 100px;
-    height: 24px;
-    visible: !root.compact;
-    background: transparent;
-
-    HorizontalLayout {
-        spacing: Theme.pad-xs;
-        alignment: center;
-
-        MaterialIcon {
-            name: root.value <= 0 ? "volume_off" : "volume_up";
-            icon-size: 18px;
-            icon-color: Theme.subtext0;
-        }
-
-        slider := SliderTrack {
-            width: 78px;
-            value: root.value;
-            is-disabled: !root.slider-enabled;
-            seam-mask-color: Theme.crust;
-            track-color: Theme.surface2;
-            fill-color: Theme.accent;
-            changed(v) => { root.changed(v); }
-        }
-    }
-}
 
 // One music video as a page: the video inline at the top, its facts and actions under it, and the
 // thread below. It replaces the artist detail that listed it; `MvPlayer.open` says whether a stream
@@ -72,6 +33,10 @@ export component MvDetailView inherits Rectangle {
     private property <int> idle-ticks: 10;
     // The quality menu is a `PopupWindow`, so the pointer leaves the trigger while choosing.
     private property <bool> menu-open: PopupHighlight.id == "mv-page-quality";
+    // A pick restarts the stream with the pointer still on the menu, so the pick itself is what
+    // keeps the bar up rather than movement over the stage.
+    private property <int> watched-quality: MvPlayer.quality;
+    changed watched-quality => { root.wake(); }
     private property <bool> chrome-hovered: play-btn.has-hover || fullscreen-btn.has-hover
         || quality-menu.hovered || timeline.has-hover || volume.active;
 
@@ -152,25 +117,6 @@ export component MvDetailView inherits Rectangle {
                     image-fit: contain;
                 }
 
-                if MvPlayer.error != "": VerticalLayout {
-                    alignment: center;
-                    spacing: Theme.pad-sm;
-
-                    Text {
-                        text: @tr("This video could not be played");
-                        color: Theme.text;
-                        font-size: Theme.font-size-lg;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: MvPlayer.error;
-                        color: Theme.overlay1;
-                        font-size: Theme.font-size-sm;
-                        horizontal-alignment: center;
-                        overflow: elide;
-                    }
-                }
-
                 if MvDetail.resolving || (MvPlayer.open && MvPlayer.loading): VerticalLayout {
                     alignment: center;
                     Text {
@@ -193,6 +139,35 @@ export component MvDetailView inherits Rectangle {
                             MvPlayer.toggle-play();
                         } else if (MvPlayer.error == "" && !MvDetail.resolving) {
                             MvDetail.play();
+                        }
+                    }
+                }
+
+                // Above the picture's own press so the retry can be hit; the texts around it
+                // take no clicks, which is what keeps the stage itself clickable either side.
+                if MvPlayer.error != "": VerticalLayout {
+                    alignment: center;
+                    spacing: Theme.pad-md;
+
+                    Text {
+                        text: @tr("This video could not be played");
+                        color: Theme.text;
+                        font-size: Theme.font-size-lg;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: MvPlayer.error;
+                        color: Theme.overlay1;
+                        font-size: Theme.font-size-sm;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+
+                    ActionPill {
+                        PillButton {
+                            icon: "refresh";
+                            text: @tr("Retry");
+                            clicked => { MvDetail.play(); }
                         }
                     }
                 }
@@ -274,50 +249,12 @@ export component MvDetailView inherits Rectangle {
                         // and the page keeps the tier and the window control.
                         volume := MvVolume {
                             compact: root.stage-w < 520px;
-                            value: MvPlayer.volume / 100.0;
                             slider-enabled: root.chrome-visible;
-                            changed(v) => { MvPlayer.set-volume(round(v * 100)); }
                         }
 
-                        quality-menu := PillOverflowMenu {
+                        quality-menu := MvQualityMenu {
                             menu-id: "mv-page-quality";
-                            label: root.quality-label();
-                            icon: "";
-                            min-menu-width: 120px;
                             tooltip-text: "";
-
-                            MenuItem {
-                                label: "1080p";
-                                checked: MvPlayer.quality == 1080;
-                                clicked => {
-                                    root.wake();
-                                    MvPlayer.set-quality(1080);
-                                }
-                            }
-                            MenuItem {
-                                label: "720p";
-                                checked: MvPlayer.quality == 720;
-                                clicked => {
-                                    root.wake();
-                                    MvPlayer.set-quality(720);
-                                }
-                            }
-                            MenuItem {
-                                label: "480p";
-                                checked: MvPlayer.quality == 480;
-                                clicked => {
-                                    root.wake();
-                                    MvPlayer.set-quality(480);
-                                }
-                            }
-                            MenuItem {
-                                label: "240p";
-                                checked: MvPlayer.quality == 240;
-                                clicked => {
-                                    root.wake();
-                                    MvPlayer.set-quality(240);
-                                }
-                            }
                         }
 
                         fullscreen-btn := IconButton {
@@ -541,11 +478,5 @@ export component MvDetailView inherits Rectangle {
             return 0.0;
         }
         return clamp(MvPlayer.position-ms * 1.0 / MvPlayer.duration-ms, 0.0, 1.0);
-    }
-
-    // The tier labels are the endpoints' own `r` numbers, so they are the same string in every
-    // locale and never enter a catalogue.
-    pure function quality-label() -> string {
-        return "\{MvPlayer.quality}p";
     }
 }

@@ -1,11 +1,10 @@
 import { Theme } from "../theme.slint";
 import { MvPlayer } from "../globals/mv-player.slint";
 import { PopupHighlight } from "../globals/shell.slint";
-import { MenuItem } from "context-menu.slint";
 import { IconButton } from "icon-button.slint";
-import { MaterialIcon } from "material-icon.slint";
-import { PillOverflowMenu } from "pill-overflow-menu.slint";
 import { SliderTrack } from "slider-track.slint";
+import { MvQualityMenu } from "mv-quality-menu.slint";
+import { MvVolume } from "mv-volume.slint";
 
 // The full-window MV surface: the video under a title scrim and a transport bar. Mounted while
 // `MvPlayer.open` and either fullscreen or away from the MV's own page, so a closed player leaves
@@ -22,11 +21,15 @@ export component MvPlayerOverlay inherits Rectangle {
     property <bool> menu-open: PopupHighlight.id == "mv-quality";
     property <bool> chrome-hovered: close-btn.has-hover || fullscreen-btn.has-hover
         || play-btn.has-hover || quality-menu.hovered
-        || timeline.has-hover || volume-slider.has-hover;
+        || timeline.has-hover || volume-slider.active;
 
     // A local mirror because `changed` takes no path expression on a global.
     property <bool> watched-fullscreen: MvPlayer.fullscreen;
     changed watched-fullscreen => { root.wake(); }
+    // A tier pick restarts the stream with the pointer still on the menu, which is not movement
+    // over the picture.
+    property <int> watched-quality: MvPlayer.quality;
+    changed watched-quality => { root.wake(); }
     changed menu-open => {
         if (root.menu-open) {
             root.wake();
@@ -44,7 +47,7 @@ export component MvPlayerOverlay inherits Rectangle {
     Timer {
         interval: 250ms;
         running: root.chrome-visible && !root.chrome-hovered && !root.menu-open
-            && !timeline.pressed && !volume-slider.pressed;
+            && !timeline.pressed;
         triggered => {
             if (root.idle-ticks > 0) {
                 root.idle-ticks -= 1;
@@ -123,45 +126,9 @@ export component MvPlayerOverlay inherits Rectangle {
                 horizontal-stretch: 1;
             }
 
-            quality-menu := PillOverflowMenu {
+            quality-menu := MvQualityMenu {
                 menu-id: "mv-quality";
-                label: root.quality-label();
-                icon: "";
-                min-menu-width: 120px;
                 tooltip-text: "";
-
-                MenuItem {
-                    label: "1080p";
-                    checked: MvPlayer.quality == 1080;
-                    clicked => {
-                        root.wake();
-                        MvPlayer.set-quality(1080);
-                    }
-                }
-                MenuItem {
-                    label: "720p";
-                    checked: MvPlayer.quality == 720;
-                    clicked => {
-                        root.wake();
-                        MvPlayer.set-quality(720);
-                    }
-                }
-                MenuItem {
-                    label: "480p";
-                    checked: MvPlayer.quality == 480;
-                    clicked => {
-                        root.wake();
-                        MvPlayer.set-quality(480);
-                    }
-                }
-                MenuItem {
-                    label: "240p";
-                    checked: MvPlayer.quality == 240;
-                    clicked => {
-                        root.wake();
-                        MvPlayer.set-quality(240);
-                    }
-                }
             }
 
             fullscreen-btn := IconButton {
@@ -255,22 +222,8 @@ export component MvPlayerOverlay inherits Rectangle {
                 vertical-alignment: center;
             }
 
-            VerticalLayout {
-                alignment: center;
-                MaterialIcon {
-                    name: MvPlayer.volume == 0 ? "volume_off" : "volume_up";
-                    icon-size: 18px;
-                    icon-color: Theme.subtext0;
-                }
-            }
-
-            volume-slider := SliderTrack {
-                width: 96px;
-                height: 24px;
-                value: MvPlayer.volume / 100.0;
-                seam-mask-color: Theme.crust;
-                track-color: Theme.surface2;
-                changed(v) => { MvPlayer.set-volume(round(v * 100)); }
+            volume-slider := MvVolume {
+                slider-enabled: root.chrome-visible;
             }
         }
     }
@@ -293,11 +246,5 @@ export component MvPlayerOverlay inherits Rectangle {
             return 0.0;
         }
         return clamp(MvPlayer.position-ms * 1.0 / MvPlayer.duration-ms, 0.0, 1.0);
-    }
-
-    // The tier labels are the endpoints' own `r` numbers, so they are the same string in every
-    // locale and never enter a catalogue.
-    pure function quality-label() -> string {
-        return "\{MvPlayer.quality}p";
     }
 }

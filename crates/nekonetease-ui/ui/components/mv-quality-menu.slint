@@ -1,0 +1,48 @@
+import { MvPlayer } from "../globals/mv-player.slint";
+import { MenuItem } from "context-menu.slint";
+import { PillOverflowMenu } from "pill-overflow-menu.slint";
+
+// The tiers the stream offers, mounted once for both transports: the page's bar and the
+// fullscreen overlay would otherwise each spell the list, and a tier added to one would be
+// missing from the other. The labels are the endpoints' own `r` numbers, so they are the same
+// string in every locale and never enter a catalogue.
+export component MvQualityMenu inherits Rectangle {
+    // The `PopupHighlight` discriminator; the host reads the same id back to hold its chrome up
+    // while the menu is open.
+    in property <string> menu-id;
+    in property <string> tooltip-text;
+
+    out property <bool> hovered: menu.hovered;
+
+    width: menu.width;
+    height: menu.height;
+
+    menu := PillOverflowMenu {
+        menu-id: root.menu-id;
+        label: "\{MvPlayer.quality}p";
+        icon: "";
+        min-menu-width: 120px;
+        tooltip-text: root.tooltip-text;
+
+        MenuItem {
+            label: "1080p";
+            checked: MvPlayer.quality == 1080;
+            clicked => { MvPlayer.set-quality(1080); }
+        }
+        MenuItem {
+            label: "720p";
+            checked: MvPlayer.quality == 720;
+            clicked => { MvPlayer.set-quality(720); }
+        }
+        MenuItem {
+            label: "480p";
+            checked: MvPlayer.quality == 480;
+            clicked => { MvPlayer.set-quality(480); }
+        }
+        MenuItem {
+            label: "240p";
+            checked: MvPlayer.quality == 240;
+            clicked => { MvPlayer.set-quality(240); }
+        }
+    }
+}

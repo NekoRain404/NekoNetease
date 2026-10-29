@@ -9,6 +9,8 @@
 //! `Vec<u8>` for the render thread, and an `Image` needs a `SharedPixelBuffer`, so the two cannot
 //! be the same allocation.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
@@ -17,7 +19,7 @@ use nekonetease_app::state::AppState;
 use nekonetease_core::error::AppError;
 use nekonetease_core::utils::toast::{self, ToastKind};
 use nekonetease_ui::{AppWindow, MvPlayer};
-use nekonetease_video::{VideoFrame, VideoState};
+use nekonetease_video::{VideoFrame, VideoPlayer, VideoState};
 
 /// Wire the overlay's two controls and its three subscriptions.
 ///
@@ -65,15 +67,39 @@ fn install_callbacks(app: &AppWindow, state: &AppState) {
         video.seek_ms(if duration > 0 { target.min(duration) } else { target });
     });
 
+    // The level a mute hands back. Session-only: the app's own volume belongs to the music
+    // engine and persists, so keeping this one beside it in `settings.json` would tie two
+    // unrelated levels together.
+    let unmute_level = Rc::new(Cell::new(100_i32));
+
     let video = Arc::clone(&state.video);
     let weak = app.as_weak();
+    let restore = Rc::clone(&unmute_level);
     global.on_set_volume(move |percent| {
         let percent = percent.clamp(0, 100);
-        video.set_volume(f64::from(percent) / 100.0);
+        if percent > 0 {
+            restore.set(percent);
+        }
         // The scale is read back by a quality switch, which hands it to the replacement file.
         if let Some(ui) = weak.upgrade() {
-            ui.global::<MvPlayer>().set_volume(percent);
+            apply_volume(&ui, &video, percent);
         }
+    });
+
+    let video = Arc::clone(&state.video);
+    let weak = app.as_weak();
+    global.on_toggle_mute(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let current = ui.global::<MvPlayer>().get_volume();
+        // A slider already at zero has nothing to hand back, so the press unmutes to the last
+        // level the viewer set rather than silently doing nothing.
+        let target = if current > 0 {
+            unmute_level.set(current);
+            0
+        } else {
+            unmute_level.get()
+        };
+        apply_volume(&ui, &video, target);
     });
 
     let weak = app.as_weak();
@@ -82,6 +108,14 @@ fn install_callbacks(app: &AppWindow, state: &AppState) {
         ui.global::<MvPlayer>().set_fullscreen(value);
         ui.window().set_fullscreen(value);
     });
+}
+
+/// The one place a level reaches the player and the property the transports mirror, so the
+/// slider, the glyph and the keyboard cannot disagree about it.
+fn apply_volume(ui: &AppWindow, video: &VideoPlayer, percent: i32) {
+    let percent = percent.clamp(0, 100);
+    video.set_volume(f64::from(percent) / 100.0);
+    ui.global::<MvPlayer>().set_volume(percent);
 }
 
 /// Hands the window back its chrome. A closed player that stayed fullscreen would leave the

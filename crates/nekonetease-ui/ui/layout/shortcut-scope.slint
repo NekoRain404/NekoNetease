@@ -186,6 +186,10 @@ export component ShortcutScope inherits FocusScope {
                 MvPlayer.set-fullscreen(!MvPlayer.fullscreen);
                 return accept;
             }
+            if (ev.text == "m" || ev.text == "M") {
+                MvPlayer.toggle-mute();
+                return accept;
+            }
             return reject;
         }
 

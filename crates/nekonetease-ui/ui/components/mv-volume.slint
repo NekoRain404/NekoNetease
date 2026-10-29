@@ -1,0 +1,51 @@
+import { Theme } from "../theme.slint";
+import { MvPlayer } from "../globals/mv-player.slint";
+import { IconButton } from "icon-button.slint";
+import { SliderTrack } from "slider-track.slint";
+
+// The transports' volume pair: a glyph that mutes and a slider that sets the level. One
+// component because the MV page and the fullscreen overlay are two mounts of the same control,
+// and because the mute has to hand back the level it muted from — Rust keeps that, so a slider
+// drag after a mute is what the next press restores.
+export component MvVolume inherits Rectangle {
+    // The page drops the pair when the stage is too narrow for it; the keyboard still sets the
+    // level. The zero width keeps the transport's spacing from opening a gap for nothing.
+    in property <bool> compact: false;
+    // A faded transport still hit-tests, so the slider is disabled rather than left live under
+    // a bar the viewer cannot see.
+    in property <bool> slider-enabled: true;
+
+    // What the host's idle timer reads: a held thumb counts as activity, so the bar cannot fade
+    // out from under a drag.
+    out property <bool> active: glyph.has-hover || slider.has-hover || slider.pressed;
+
+    width: root.compact ? 0px : layout.preferred-width;
+    height: 28px;
+    visible: !root.compact;
+
+    layout := HorizontalLayout {
+        spacing: Theme.pad-xs;
+        alignment: center;
+
+        glyph := IconButton {
+            icon: MvPlayer.volume == 0 ? "volume_off" : "volume_up";
+            diameter: 28px;
+            icon-size: 18px;
+            idle-fg: Theme.subtext0;
+            hover-fg: Theme.text;
+            tooltip-text: @tr("Mute or unmute");
+            clicked => { MvPlayer.toggle-mute(); }
+        }
+
+        slider := SliderTrack {
+            width: 78px;
+            height: 24px;
+            value: MvPlayer.volume / 100.0;
+            is-disabled: !root.slider-enabled;
+            seam-mask-color: Theme.crust;
+            track-color: Theme.surface2;
+            fill-color: Theme.accent;
+            changed(v) => { MvPlayer.set-volume(round(v * 100)); }
+        }
+    }
+}

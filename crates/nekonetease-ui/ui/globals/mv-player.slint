@@ -28,6 +28,9 @@ export global MvPlayer {
 
     callback close();
     callback toggle-play();
+    // Silences the video and hands back the level it muted from, which Rust keeps for the
+    // session — the app's own volume is the music engine's and survives restarts.
+    callback toggle-mute();
     // Absolute milliseconds; the overlay clamps it to the duration before sending.
     callback seek(int);
     callback set-volume(int);
