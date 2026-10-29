@@ -1,7 +1,34 @@
+# Build output
 /target/
+/dist/
+
+# Scratch install used while testing the packaging scripts
 /.local/
+
+# Runtime data and logs
 *.log
 *.db
 *.db-shm
 *.db-wal
 
+# Package artifacts — build them into `dist/`, or somewhere outside the tree
+/*.AppImage
+/*.rpm
+/*.deb
+/*.msi
+/nekonetease-*.tar.gz
+
+# Pristine font sources; `scripts/patch_vazirmatn.py` reads them and they are not redistributable
+# in their original form here
+scripts/fonts-src/
+originals/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+
+# Local environment for the API keys the integrations read through `dotenv`
+.env

@@ -7,7 +7,7 @@
 - 项目跟随宿主 stable 工具链（最低 Rust 1.99）；`rust-toolchain.toml` 只声明 `stable` 与所需组件。
 - 确认 `.cargo/config.toml` 存在且已纳入版本库。它提供 `NEKONETEASE_REPO_ROOT`，缺失会让测试 fixture 和编译期路径解析失败。
 - 开发运行和测试使用独立数据目录。优先设置 `NEKONETEASE_DATA_DIR="$(mktemp -d)"`，不要拿真实用户数据库验证迁移或破坏性操作。
-- 先看 `git status --short`。当前仓库可能同时存在其他团队的 UI、翻译或网易云改动，不要用 reset、checkout 或批量格式化覆盖它们。
+- 先看 `git status --short`。改动别人的未提交内容之前先确认它属于谁，不要用 reset、checkout 或批量格式化覆盖。
 - 大功能先读相关 ADR，再决定是否需要新增 ADR；不要因为“只是重构”就跳过架构决策记录。
 
 ## Cargo 与 crate 边界

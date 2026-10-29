@@ -1,0 +1,66 @@
+name: Bug report
+description: A crash, a wrong render, or playback that stops working.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The log tail is usually what makes a fix possible; it is built to
+        carry no credentials.
+
+        - Linux and macOS: run `NekoNetease --logs` to print the log directory.
+        - Windows: `%APPDATA%\NekoNetease\logs\`.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Click …
+        3. The window closes
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `NekoNetease --version`, or the release you installed.
+      placeholder: NekoNetease 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options:
+        - AppImage
+        - tarball (install-linux.sh)
+        - RPM
+        - DEB
+        - MSI
+        - portable ZIP
+        - built from source
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Distribution and desktop
+      description: e.g. Fedora 42 / KDE Plasma 6.4 on Wayland, Windows 11 24H2.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log tail
+      description: The last ~100 lines of the newest file in the log directory.
+      render: text
+    validations:
+      required: false

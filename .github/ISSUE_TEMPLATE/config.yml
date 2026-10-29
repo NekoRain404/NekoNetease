@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/NekoRain404/NekoNetease/tree/main/docs
+    about: Architecture decisions, development notes and the NetEase feature audit.

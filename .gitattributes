@@ -1,0 +1,7 @@
+# The test suite assumes an LF checkout: a dozen source walks split on "\n}\n", the rule
+# frontmatter parser, and the packaging text compared against LICENSE all fail on a CRLF copy.
+* text=auto eol=lf
+
+# Signed fixtures. Git must not rewrite a byte on the way out — a CRLF conversion here breaks
+# every minisign verification test, and the damage is invisible until someone clones on Windows.
+*.minisig -text

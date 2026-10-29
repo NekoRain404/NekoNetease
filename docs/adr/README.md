@@ -46,6 +46,7 @@ chronological and the groups are not, so a low number can sit anywhere.
 | [14. The network never touches the audio callback thread](0014-no-network-on-the-audio-callback.md) | Accepted, 2026-08-20 |
 | [35. State mutation returns an action list, and the pair is serialized](0035-player-actions-and-lock-ordering.md) | Accepted, 2026-05-25 |
 | [40. Opus decodes through a pure-Rust crate, not libopus](0040-opus-decodes-through-a-pure-rust-crate.md) | Accepted, 2026-09-21 |
+| [41. Music videos play through libmpv, into a frame the app draws itself](0041-music-videos-play-through-libmpv.md) | Accepted, 2026-10-25 |
 
 ### Library and data
 
@@ -66,6 +67,7 @@ chronological and the groups are not, so a low number can sit anywhere.
 | [15. Radio ships off, and the guard is at the facade rather than the UI](0015-radio-ships-off-guarded-at-the-facade.md) | Accepted, 2026-08-20 |
 | [23. Scrobbling is a read-only tap on the player, decided by a pure function](0023-scrobbling-is-a-read-only-tap.md) | Accepted, 2026-07-22 |
 | [24. Discord presence speaks its IPC directly, with no new dependency](0024-discord-ipc-is-hand-rolled.md) | Accepted, 2026-07-24 |
+| [42. The NetEase client speaks the unofficial protocol itself, and decodes tolerantly](0042-netease-is-our-own-unofficial-client.md) | Accepted, 2026-10-26 |
 
 ### Crate structure
 

@@ -1,6 +1,6 @@
 # NekoNetease 项目交付与开发交接文档
 
-更新时间：2026-10-28  
+更新时间：2026-10-29  
 交付对象：后续维护与网易云功能开发团队  
 项目维护者：NekoRain  
 参考项目作者：Kenan Salar（Melodia）
@@ -15,16 +15,18 @@ NekoNetease 是一个 Rust + Slint 的跨平台桌面音乐播放器。当前产
 
 ## 2. 当前版本与仓库状态
 
-- 当前版本：`0.1.5`
+- 当前版本：`0.2.0`（首个预发布候选）
 - 默认分支：`main`
 - 许可：`AGPL-3.0-or-later`
 - 项目作者：NekoRain
 - 参考项目：Melodia，作者 Kenan Salar
-- 远程仓库元数据：`https://github.com/HELPMEEADICE/NekoNetease`
+- 远程仓库：`https://github.com/NekoRain404/NekoNetease`（应用标识统一为
+  `com.github.nekorain404.nekonetease`）
 - 支持平台：Linux、Windows；当前发布构建仅覆盖 `x86_64`，`aarch64` 不受支持——它不在发布矩阵中，且打包脚本、RPM/AppImage 工具链与产物命名都按 `x86_64` 写死，不能只靠增加矩阵槽完成（见第 7 节发布链记录）
 - 当前仓库包含 `.github/workflows/release.yml`（格式化、依赖审计、Slint 编译、Clippy、Linux/Windows 测试与发布矩阵）和 `.github/actions/`；构建、测试和发布约定以该工作流和 `.claude/rules/ci-packaging.md` 为准。
 
-工作树在生成本文档时不是干净状态。已有未提交内容包括网易云歌单评论预览、网易云实体字段补充、UI 模型和测试。这些改动尚未形成稳定提交，接手团队应先查看 `git diff`、补齐验证并按功能拆分提交。
+工作树在生成本文档时是干净的，历史是一条按功能拆分的线性提交。接手团队开新分支前请先跑一遍
+第 6 节的门禁，确认本地工具链与 CI 一致。
 
 ## 3. 工作区配置
 
@@ -46,7 +48,7 @@ exclude = ["winit"]
 - Rust edition：2024
 - Rust MSRV：1.99
 - Cargo resolver：3
-- 版本：0.1.5
+- 版本：0.2.0
 - `slint` / `slint-build`：1.16.1
 - SQLx + SQLite + 内置 migrations
 - Tokio 多线程 runtime

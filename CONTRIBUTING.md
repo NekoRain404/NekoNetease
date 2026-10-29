@@ -13,12 +13,6 @@ A build from this repository keeps its library, settings and database in a separ
 `NekoNetease-dev` data directory, so you can break things without touching an installed
 copy. Set `NEKONETEASE_DATA_DIR` if you want a scratch directory of your own.
 
-Run this once per clone, so the tree-wide formatting commits stay out of `git blame`:
-
-```bash
-git config blame.ignoreRevsFile .git-blame-ignore-revs
-```
-
 Adding, changing or removing an `@tr(...)` string means regenerating the translation
 catalogues, which needs two tools that building, testing and translating don't. The first
 is the string extractor, at the `slint` version in the root `Cargo.toml`:
@@ -93,18 +87,17 @@ counts as empty while any one of its forms is.
 
 ## What CI runs
 
-Every pull request runs **PR Validation**: a `cargo audit` advisory scan, a `cargo fmt`
-check, `clippy` with `-D warnings`, and the test suite on both Linux and Windows. The
-Windows job skips the one integration test that needs an audio device. The aggregate
-`pr-validation` check has to be green before a merge. Documentation-only changes skip
-all six.
+Every pull request runs the `Release` workflow's checks: a `cargo audit` advisory scan, a
+`cargo fmt` check, the Slint compilation, `clippy` with `-D warnings`, and the test suite on
+both Linux and Windows. The Windows job skips the one integration test that needs an audio
+device. They feed the aggregate `quality` check, which has to be green before a merge.
 
 The Windows job is the one that can go red on a change you tested green locally, and
 the usual cause is a path: build them with `Path::join` or `MAIN_SEPARATOR_STR` rather
 than spelling a separator, in fixtures as much as in code.
 
-Coverage is a separate manual run (**Actions → Deploy Coverage → Run workflow**),
-published to [kenansalar.github.io/NekoNetease](https://kenansalar.github.io/NekoNetease/).
+Coverage is local: `cargo llvm-cov --workspace --html` writes a report to
+`target/llvm-cov/html/`.
 
 ## On AI
 
