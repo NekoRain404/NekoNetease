@@ -36,9 +36,9 @@ NekoNetease 基于 [Kenan Salar 的 Melodia](https://github.com/KenanSalar/Melod
 | --- | --- |
 | ![排行榜](docs/screenshots/charts.png) | ![推荐](docs/screenshots/recommended.png) |
 
-| 收藏 | 设置 |
+| 漫游 | 设置 |
 | --- | --- |
-| ![收藏](docs/screenshots/favorites.png) | ![设置](docs/screenshots/settings.png) |
+| ![漫游](docs/screenshots/roaming.png) | ![设置](docs/screenshots/settings.png) |
 
 </div>
 

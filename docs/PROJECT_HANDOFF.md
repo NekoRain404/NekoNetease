@@ -142,10 +142,18 @@ Cargo 会以 `.cargo/config.toml` 所在仓库为基准解析该相对值，并�
 
 ### 已提交记录
 
+历史是线性的，全部提交的作者与提交者都是 `NekoRain <61972435+NekoRain404@users.noreply.github.com>`，
+与 GitHub 账号 `NekoRain404` 对应。
+
 | 日期 | 提交 | 内容 |
 | --- | --- | --- |
-| 2026-10-27 | `2ecbad8` | 建立 NekoRain 项目基线：项目元数据、作者和参考项目说明、Cargo workspace、README、许可证、构建脚本和现有代码基线。 |
-| 2026-10-27 | `9aa4096` | 完成网易云功能审计并写入 `docs/NETEASE_FEATURE_AUDIT.md`，记录搜索、分页、云歌单、发现、账号、播放权限、媒体类型、社交和云盘缺口。 |
+| 2026-10-28 | `2e034f4` | 项目基线：Cargo workspace、Slint UI、播放链、网易云客户端、打包脚本与文档的一次性导入。 |
+| 2026-10-29 | `cd385db` | 把搜索页发现区的卡片网格补进 `card_selection` 的 `LONE_ROW_MOUNTS` 基线。 |
+| 2026-10-29 | `8c00a7d` | MV 播放页与全屏覆盖层共用音量与清晰度控件；新增静音（含 `M`）、失败重试，切换相似 MV 时停掉上一条流。 |
+| 2026-10-29 | `d2f8a23` | 四项审计修复：重复 ID 的查询不再丢行、补全哈希分批提交、M3U 导入上限、更新器冒烟测试的精确比对与 `kill_on_drop`。 |
+| 2026-10-29 | `5ecc172` | CI 默认只读令牌；签名预检不再运行在 pull request 上。 |
+| 2026-10-29 | `f5eea9a` | 全仓标识迁移到 `NekoRain404`（AppStream id、polkit action、desktop-id、D-Bus 接口、更新器仓库），版本切到 `0.2.0`。 |
+| 2026-10-29 | `0e31ec5` | README 重写并接入截图、ADR 41–42、交接与开发文档对齐代码、引入 issue/PR 模板与 `.gitattributes`。 |
 
 ### 当前工作树开发记录
 
@@ -226,9 +234,10 @@ Cargo 会以 `.cargo/config.toml` 所在仓库为基准解析该相对值，并�
 
 - `cargo fmt --all --check`：通过。
 - `cargo clippy --all-targets --locked --workspace -- -D warnings`：通过（无任何 `-A`/`allow`）。
-- `cargo test --locked --workspace`：全部二进制通过。各 crate 最近一次单独运行的结果：core 168、net 204、app 814、store 535、engine 245、views 1068、translations 15。
-- `cargo build -p nekonetease`：通过；`cargo build --release`（fat LTO，21 分 22 秒）：通过，产物 123 MB（保留符号）。
-- release 二进制启动 10 秒采样：`VmHWM` 223 MB。
+- `cargo test --locked --workspace`：52 个测试二进制、3960 项断言全部通过（含 15 项翻译目录校验）。
+- `cargo build --release -p nekonetease`（fat LTO）：通过，产物 128 MB（保留符号）；本机同时有其它构建任务，耗时 56 分 41 秒。
+- `./scripts/build-tarball.sh` + 解包后的 `install-linux.sh`：安装到 `~/.local/share/NekoNetease`，`--version` 输出 `NekoNetease 0.2.0`。
+- release 二进制启动 10 秒采样：`VmHWM` 223 MB（0.1.5 同口径）。
 - `cargo run --example netease_live_probe -p nekonetease-app`：真实账号探针 13/13 通过（account / 两类搜索 / 榜单 / MV 详情 / 专辑评论 / 云盘 / 每日推荐 / 推荐歌单 / 歌手 MV / 相似 MV / DJ 推荐 / 私人漫游），会话从系统凭据恢复。
 - 发布前已知未验证项：真实账号下的写操作（歌单增删、评论发表/删除、MV 点赞收藏、封面上传、签到）、Windows 实机与 MSI 安装、GitHub Actions 上的 release/provenance 步骤、屏幕阅读器实际输出。
 
