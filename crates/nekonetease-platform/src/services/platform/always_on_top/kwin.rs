@@ -28,7 +28,7 @@ const SCRIPT_INTERFACE: &str = "org.kde.kwin.Script";
 const PIN_PLUGIN: &str = "nekonetease_pin";
 
 /// Where the watcher script calls back, on the connection that loaded it.
-const REPORT_PATH: &str = "/com/github/kenansalar/NekoNetease/KeepAbove";
+const REPORT_PATH: &str = "/com/github/nekorain404/NekoNetease/KeepAbove";
 const REPORT_METHOD: &str = "Changed";
 
 pub async fn set_always_on_top(data_dir: &Path, pinned: bool) -> Result<(), AppError> {
@@ -110,7 +110,7 @@ struct KeepAboveReports {
 
 // `spawn = false` because zbus otherwise hands each call its own task, and two quick toggles can
 // then land in the wrong order and leave the button on the state `KWin` left behind.
-#[interface(name = "com.github.kenansalar.NekoNetease.KeepAbove", spawn = false)]
+#[interface(name = "com.github.nekorain404.NekoNetease.KeepAbove", spawn = false)]
 impl KeepAboveReports {
     /// Spelled out rather than derived, [`REPORT_METHOD`] being the script's copy.
     #[zbus(name = "Changed")]

@@ -117,8 +117,8 @@ cp "$REPO_ROOT/assets/icons/nekonetease.png" "$APPDIR/usr/share/icons/hicolor/25
 # name, RPM/DEB resolve `nekonetease` via PATH. The ` %F` is not optional; without it
 # the MimeType list above is unusable.
 # Desktop file named after the reverse-DNS app id so its desktop-id
-# matches the AppStream component id `com.github.helpmeeadice.nekonetease`.
-cat > "$APPDIR/com.github.helpmeeadice.nekonetease.desktop" <<'EOF'
+# matches the AppStream component id `com.github.nekorain404.nekonetease`.
+cat > "$APPDIR/com.github.nekorain404.nekonetease.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=NekoNetease
@@ -138,8 +138,8 @@ EOF
 # validates it automatically when appstreamcli is on $PATH. Shipped
 # verbatim, identical to the RPM/DEB/tarball copies.
 mkdir -p "$APPDIR/usr/share/metainfo"
-cp "$REPO_ROOT/packaging/com.github.helpmeeadice.nekonetease.metainfo.xml" \
-   "$APPDIR/usr/share/metainfo/com.github.helpmeeadice.nekonetease.metainfo.xml"
+cp "$REPO_ROOT/packaging/com.github.nekorain404.nekonetease.metainfo.xml" \
+   "$APPDIR/usr/share/metainfo/com.github.nekorain404.nekonetease.metainfo.xml"
 
 # Licences. The AppImage is self-contained — nothing resolves the MetaInfo's
 # `<project_license>` back to a text — so it needs the AGPL itself, and the
@@ -159,7 +159,7 @@ LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \
 OUTPUT="$OUTPUT" \
 "$LINUXDEPLOY" \
   --appdir "$APPDIR" \
-  --desktop-file "$APPDIR/com.github.helpmeeadice.nekonetease.desktop" \
+  --desktop-file "$APPDIR/com.github.nekorain404.nekonetease.desktop" \
   --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/nekonetease.png" \
   --executable "$APPDIR/usr/bin/NekoNetease" \
   --output appimage

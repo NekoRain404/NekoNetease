@@ -20,10 +20,10 @@
 <policyconfig>
 
   <vendor>NekoNetease</vendor>
-  <vendor_url>https://github.com/HELPMEEADICE/NekoNetease</vendor_url>
+  <vendor_url>https://github.com/NekoRain404/NekoNetease</vendor_url>
   <icon_name>nekonetease</icon_name>
 
-  <action id="com.github.helpmeeadice.nekonetease.update">
+  <action id="com.github.nekorain404.nekonetease.update">
     <description>Install NekoNetease update</description>
     <message>Authentication is required to install a NekoNetease update.</message>
     <defaults>

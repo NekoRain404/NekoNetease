@@ -18,14 +18,14 @@ exclude = ["winit"]
 # Inherited by every package. Release CI prepares this version from the tag;
 # `build-{rpm,appimage,tarball}.sh` read this table's first `version = `, so it stays first.
 [workspace.package]
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 # Lockstep with `rust-toolchain.toml` and `clippy.toml`'s `msrv`.
 rust-version = "1.99"
 # Shared package metadata so workspace members inherit the canonical project URLs.
-repository = "https://github.com/HELPMEEADICE/NekoNetease"
-homepage = "https://github.com/HELPMEEADICE/NekoNetease"
+repository = "https://github.com/NekoRain404/NekoNetease"
+homepage = "https://github.com/NekoRain404/NekoNetease"
 
 # Every dependency is declared here rather than in the member that uses it, and the
 # reason is the one `slint` taught: a drifted version resolves two copies of a crate

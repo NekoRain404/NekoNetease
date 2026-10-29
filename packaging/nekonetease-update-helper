@@ -6,9 +6,9 @@
 #   pkexec /usr/libexec/nekonetease-update-helper deb /path/to/nekonetease_0.2.0_amd64.deb
 #
 # The polkit policy at
-#   /usr/share/polkit-1/actions/com.github.helpmeeadice.nekonetease.update.policy
+#   /usr/share/polkit-1/actions/com.github.nekorain404.nekonetease.update.policy
 # registers this binary path as the target of the
-# `com.github.helpmeeadice.nekonetease.update` action, so the KDE / GNOME auth
+# `com.github.nekorain404.nekonetease.update` action, so the KDE / GNOME auth
 # dialog shows "Install NekoNetease update" instead of the raw
 # `dnf install -y ...` command line.
 #

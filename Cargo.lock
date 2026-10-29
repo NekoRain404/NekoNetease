@@ -3971,7 +3971,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "async-compat",
  "glob",
@@ -4000,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-app"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -4047,7 +4047,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-artwork"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "color-thief",
@@ -4068,7 +4068,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-audio"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "lofty",
  "log",
@@ -4083,7 +4083,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-core"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -4102,7 +4102,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-engine"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "cpal",
  "log",
@@ -4121,7 +4121,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-integrations"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "log",
  "nekonetease-core",
@@ -4135,7 +4135,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-net"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4161,7 +4161,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-platform"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -4186,7 +4186,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-playback"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "alsa",
  "biquad",
@@ -4209,7 +4209,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-store"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -4232,7 +4232,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-testkit"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "image",
  "tempfile",
@@ -4240,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-ui"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "slint",
  "slint-build",
@@ -4248,7 +4248,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-video"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "libmpv2",
  "libmpv2-sys",
@@ -4260,7 +4260,7 @@ dependencies = [
 
 [[package]]
 name = "nekonetease-views"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "async-compat",
  "chrono",

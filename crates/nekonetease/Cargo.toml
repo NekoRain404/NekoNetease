@@ -68,8 +68,8 @@ and Material You."""
 # the binary would be looked for as an ordinary file that no build has put there.
 assets = [
     ["target/release/NekoNetease", "usr/bin/nekonetease", "755"],
-    ["../../scripts/NekoNetease.desktop", "usr/share/applications/com.github.helpmeeadice.nekonetease.desktop", "644"],
-    ["../../packaging/com.github.helpmeeadice.nekonetease.metainfo.xml", "usr/share/metainfo/com.github.helpmeeadice.nekonetease.metainfo.xml", "644"],
+    ["../../scripts/NekoNetease.desktop", "usr/share/applications/com.github.nekorain404.nekonetease.desktop", "644"],
+    ["../../packaging/com.github.nekorain404.nekonetease.metainfo.xml", "usr/share/metainfo/com.github.nekorain404.nekonetease.metainfo.xml", "644"],
     ["../../assets/icons/nekonetease.png", "usr/share/icons/hicolor/256x256/apps/nekonetease.png", "644"],
     ["../../LICENSE", "usr/share/doc/nekonetease/LICENSE", "644"],
     # The fonts, the vendored winit and the crates on copyleft terms all compile into
@@ -77,7 +77,7 @@ assets = [
     # no edit here, unlike `wix/main.wxs`, which has to name each one.
     ["../../licenses/*", "usr/share/doc/nekonetease/licenses/", "644"],
     ["../../packaging/nekonetease-update-helper", "usr/libexec/nekonetease-update-helper", "755"],
-    ["../../packaging/com.github.helpmeeadice.nekonetease.update.policy", "usr/share/polkit-1/actions/com.github.helpmeeadice.nekonetease.update.policy", "644"],
+    ["../../packaging/com.github.nekorain404.nekonetease.update.policy", "usr/share/polkit-1/actions/com.github.nekorain404.nekonetease.update.policy", "644"],
 ]
 
 [dependencies]

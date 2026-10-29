@@ -312,8 +312,8 @@ fn select_backend(restore_maximized: bool) -> AppResult<()> {
                 let attrs = WindowAttributesExtX11::with_name(attrs, "NekoNetease", "NekoNetease");
                 WindowAttributesExtWayland::with_name(
                     attrs,
-                    "com.github.helpmeeadice.nekonetease",
-                    "com.github.helpmeeadice.nekonetease",
+                    "com.github.nekorain404.nekonetease",
+                    "com.github.nekorain404.nekonetease",
                 )
             };
             attrs

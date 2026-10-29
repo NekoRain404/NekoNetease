@@ -44,13 +44,16 @@ remove_dir "$INSTALL_DIR/licenses"
 # Try to rmdir the install dir; non-fatal if user data is mixed in.
 [[ -d "$INSTALL_DIR" ]] && rmdir --ignore-fail-on-non-empty "$INSTALL_DIR" 2>/dev/null || true
 
-remove "$APPS_DIR/com.github.helpmeeadice.nekonetease.desktop"
+remove "$APPS_DIR/com.github.nekorain404.nekonetease.desktop"
 # Legacy: earlier per-user installs used `NekoNetease.desktop` (capital M)
 # and then `nekonetease.desktop`. Mirrors the `NekoNetease.svg` cleanup below.
 remove "$APPS_DIR/NekoNetease.desktop"
 remove "$APPS_DIR/nekonetease.desktop"
+# The desktop-id used before the repository moved to NekoRain404.
+remove "$APPS_DIR/com.github.helpmeeadice.nekonetease.desktop"
 # AppStream MetaInfo — NekoNetease self-deploys this to the per-user
 # metainfo dir on first launch (see desktop_integration.rs).
+remove "$DATA_HOME/metainfo/com.github.nekorain404.nekonetease.metainfo.xml"
 remove "$DATA_HOME/metainfo/com.github.helpmeeadice.nekonetease.metainfo.xml"
 remove "$ICONS_DIR/nekonetease.png"
 # Clean the scalable SVG installed by previous releases too.

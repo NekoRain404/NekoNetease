@@ -9,7 +9,7 @@
 # What this does:
 #   1. Copies the `NekoNetease` binary to ~/.local/share/NekoNetease/NekoNetease
 #   2. Drops the .desktop file at
-#      ~/.local/share/applications/com.github.helpmeeadice.nekonetease.desktop
+#      ~/.local/share/applications/com.github.nekorain404.nekonetease.desktop
 #   3. Drops the PNG icon at
 #      ~/.local/share/icons/hicolor/256x256/apps/nekonetease.png
 #   4. Best-effort desktop + icon cache refresh
@@ -41,13 +41,13 @@ need() {
   [[ -f "$SCRIPT_DIR/$1" ]] || { echo "ERROR: $1 missing — extracted tarball is incomplete." >&2; exit 1; }
 }
 need NekoNetease
-need com.github.helpmeeadice.nekonetease.desktop
+need com.github.nekorain404.nekonetease.desktop
 need nekonetease.png
 
 echo "==> installing NekoNetease to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR" "$APPS_DIR" "$ICONS_DIR"
 
-DESKTOP_FILE="com.github.helpmeeadice.nekonetease.desktop"
+DESKTOP_FILE="com.github.nekorain404.nekonetease.desktop"
 install -m 0755 "$SCRIPT_DIR/NekoNetease"           "$INSTALL_DIR/NekoNetease"
 install -m 0644 "$SCRIPT_DIR/$DESKTOP_FILE"     "$APPS_DIR/$DESKTOP_FILE"
 install -m 0644 "$SCRIPT_DIR/nekonetease.png"       "$ICONS_DIR/nekonetease.png"
@@ -56,8 +56,11 @@ rm -f "$DATA_HOME/icons/hicolor/scalable/apps/nekonetease.svg" \
       "$DATA_HOME/icons/hicolor/scalable/apps/NekoNetease.svg"
 
 # Earlier per-user installs used these names; a leftover shows as a duplicate
-# launcher for the same binary. Mirrored in uninstall-linux.sh.
-rm -f "$APPS_DIR/NekoNetease.desktop" "$APPS_DIR/nekonetease.desktop"
+# launcher for the same binary. `com.github.helpmeeadice.nekonetease.desktop` is
+# the desktop-id releases before the NekoRain404 rename shipped. Mirrored in
+# uninstall-linux.sh.
+rm -f "$APPS_DIR/NekoNetease.desktop" "$APPS_DIR/nekonetease.desktop" \
+      "$APPS_DIR/com.github.helpmeeadice.nekonetease.desktop"
 
 # The AppStream MetaInfo isn't installed here — NekoNetease self-deploys it to
 # ~/.local/share/metainfo/ on first launch (see desktop_integration.rs).

@@ -59,7 +59,7 @@ from `main.rs` without ever opening this file.
   updater UI stays visible — symmetric with `linux_pkg::detect`.
 
 - **Polkit helper for in-app updater RPM/DEB installs.** `/usr/libexec/nekonetease-update-helper`
-  argv-dispatches to dnf5/dnf/apt/apt-get; policy `com.github.helpmeeadice.nekonetease.update`.
+  argv-dispatches to dnf5/dnf/apt/apt-get; policy `com.github.nekorain404.nekonetease.update`.
   `install_via_package_manager` runtime-detects and falls back to a direct `pkexec dnf install`.
   **`LinuxPackageFormat` variants double as helper argv-dispatch keys.**
 
@@ -121,7 +121,7 @@ from `main.rs` without ever opening this file.
 - **Build provenance attestation.** `release.yml` runs `actions/attest-build-provenance` (v4.2.2,
   SHA-pinned) from one step in the shared matrix, so every slot attests the packages it built;
   it needs `id-token: write` + `attestations: write` granted on the `build` job. Verify with
-  `gh attestation verify <file> --repo HELPMEEADICE/NekoNetease`. The v4 wrapper is a thin one over
+  `gh attestation verify <file> --repo NekoRain404/NekoNetease`. The v4 wrapper is a thin one over
   `actions/attest`, kept so the subject list is the step's only input.
 
 - **One architecture ships today: x86_64.** `release.yml` declares six slots — Linux

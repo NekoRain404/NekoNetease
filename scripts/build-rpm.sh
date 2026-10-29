@@ -81,19 +81,19 @@ cp -r "$REPO_ROOT/licenses" "$PKG_DIR/licenses"
 # Polkit helper + policy for branded auth prompts on in-app updater.
 # The helper argv-dispatches to dnf5/dnf/apt/apt-get; the policy
 # registers the helper as the target of action
-# com.github.helpmeeadice.nekonetease.update so the KDE/GNOME auth dialog
+# com.github.nekorain404.nekonetease.update so the KDE/GNOME auth dialog
 # shows "Install NekoNetease update" instead of the raw
 # `dnf install -y ...` command line.
 cp "$REPO_ROOT/packaging/nekonetease-update-helper" "$PKG_DIR/nekonetease-update-helper"
 chmod 0755 "$PKG_DIR/nekonetease-update-helper"
-cp "$REPO_ROOT/packaging/com.github.helpmeeadice.nekonetease.update.policy" \
-   "$PKG_DIR/com.github.helpmeeadice.nekonetease.update.policy"
+cp "$REPO_ROOT/packaging/com.github.nekorain404.nekonetease.update.policy" \
+   "$PKG_DIR/com.github.nekorain404.nekonetease.update.policy"
 
 # Desktop file named after the reverse-DNS app id so its desktop-id
-# matches the AppStream component id `com.github.helpmeeadice.nekonetease` —
+# matches the AppStream component id `com.github.nekorain404.nekonetease` —
 # software centres need that match to merge the .desktop entry with the
 # MetaInfo component instead of generating a separate stub.
-cat > "$PKG_DIR/com.github.helpmeeadice.nekonetease.desktop" <<'EOF'
+cat > "$PKG_DIR/com.github.nekorain404.nekonetease.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=NekoNetease
@@ -112,13 +112,13 @@ EOF
 # app's display name, developer and license. Shipped verbatim (no
 # templating); the same file goes into the DEB, AppImage and per-user
 # tarball paths too.
-cp "$REPO_ROOT/packaging/com.github.helpmeeadice.nekonetease.metainfo.xml" \
-   "$PKG_DIR/com.github.helpmeeadice.nekonetease.metainfo.xml"
+cp "$REPO_ROOT/packaging/com.github.nekorain404.nekonetease.metainfo.xml" \
+   "$PKG_DIR/com.github.nekorain404.nekonetease.metainfo.xml"
 
 # Best-effort validation — non-fatal so the build still works on hosts
 # (e.g. CI runners) without the `appstream` package installed.
 if command -v appstreamcli >/dev/null 2>&1; then
-  appstreamcli validate --no-net "$PKG_DIR/com.github.helpmeeadice.nekonetease.metainfo.xml" \
+  appstreamcli validate --no-net "$PKG_DIR/com.github.nekorain404.nekonetease.metainfo.xml" \
     || echo "WARNING: appstreamcli reported MetaInfo issues (non-fatal)"
 fi
 
@@ -133,7 +133,7 @@ Version:        $VERSION
 Release:        1%{?dist}
 Summary:        Modern local-first music player with a Material 3-inspired interface
 License:        AGPL-3.0-or-later
-URL:            https://github.com/HELPMEEADICE/NekoNetease
+URL:            https://github.com/NekoRain404/NekoNetease
 Packager:       NekoRain
 Source0:        %{name}-%{version}.tar.gz
 
@@ -164,11 +164,11 @@ system light/dark and Material You.
 
 %install
 install -D -m 0755 nekonetease %{buildroot}%{_bindir}/nekonetease
-install -D -m 0644 com.github.helpmeeadice.nekonetease.desktop %{buildroot}%{_datadir}/applications/com.github.helpmeeadice.nekonetease.desktop
-install -D -m 0644 com.github.helpmeeadice.nekonetease.metainfo.xml %{buildroot}%{_datadir}/metainfo/com.github.helpmeeadice.nekonetease.metainfo.xml
+install -D -m 0644 com.github.nekorain404.nekonetease.desktop %{buildroot}%{_datadir}/applications/com.github.nekorain404.nekonetease.desktop
+install -D -m 0644 com.github.nekorain404.nekonetease.metainfo.xml %{buildroot}%{_datadir}/metainfo/com.github.nekorain404.nekonetease.metainfo.xml
 install -D -m 0644 nekonetease.png %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/nekonetease.png
 install -D -m 0755 nekonetease-update-helper %{buildroot}%{_libexecdir}/nekonetease-update-helper
-install -D -m 0644 com.github.helpmeeadice.nekonetease.update.policy %{buildroot}%{_datadir}/polkit-1/actions/com.github.helpmeeadice.nekonetease.update.policy
+install -D -m 0644 com.github.nekorain404.nekonetease.update.policy %{buildroot}%{_datadir}/polkit-1/actions/com.github.nekorain404.nekonetease.update.policy
 
 %post
 update-desktop-database -q %{_datadir}/applications &>/dev/null || :
@@ -185,11 +185,11 @@ fi
 %files
 %license LICENSE licenses/*
 %{_bindir}/nekonetease
-%{_datadir}/applications/com.github.helpmeeadice.nekonetease.desktop
-%{_datadir}/metainfo/com.github.helpmeeadice.nekonetease.metainfo.xml
+%{_datadir}/applications/com.github.nekorain404.nekonetease.desktop
+%{_datadir}/metainfo/com.github.nekorain404.nekonetease.metainfo.xml
 %{_datadir}/icons/hicolor/256x256/apps/nekonetease.png
 %{_libexecdir}/nekonetease-update-helper
-%{_datadir}/polkit-1/actions/com.github.helpmeeadice.nekonetease.update.policy
+%{_datadir}/polkit-1/actions/com.github.nekorain404.nekonetease.update.policy
 
 %changelog
 * $(date '+%a %b %d %Y') NekoRain - $VERSION-1

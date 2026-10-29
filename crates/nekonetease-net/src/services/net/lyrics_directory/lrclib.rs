@@ -40,7 +40,7 @@ const SEARCH_ENDPOINT: &str = "https://lrclib.net/api/search";
 const AGENT: &str = concat!(
     "NekoNetease/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/HELPMEEADICE/NekoNetease)"
+    " (https://github.com/NekoRain404/NekoNetease)"
 );
 
 /// A sheet is text and text is small. Generous against the longest song anyone has written, and

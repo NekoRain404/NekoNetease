@@ -195,10 +195,10 @@ fn metainfo_declares_expected_component() {
     // must match the installed desktop-id: drift there breaks the entry ↔
     // component merge, and the app lists with no name, developer or licence.
     for needle in &[
-        "<id>com.github.helpmeeadice.nekonetease</id>",
+        "<id>com.github.nekorain404.nekonetease</id>",
         "<name>NekoNetease</name>",
         "<project_license>AGPL-3.0-or-later</project_license>",
-        "<launchable type=\"desktop-id\">com.github.helpmeeadice.nekonetease.desktop</launchable>",
+        "<launchable type=\"desktop-id\">com.github.nekorain404.nekonetease.desktop</launchable>",
         "<developer id=\"com.github.neko-rain\">",
     ] {
         assert!(

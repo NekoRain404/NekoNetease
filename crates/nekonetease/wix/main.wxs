@@ -148,9 +148,9 @@
           when a dedicated landing page or changelog URL exists, point
           ARPURLINFOABOUT and ARPURLUPDATEINFO there respectively.
         -->
-        <Property Id="ARPHELPLINK" Value="https://github.com/HELPMEEADICE/NekoNetease" />
-        <Property Id="ARPURLINFOABOUT" Value="https://github.com/HELPMEEADICE/NekoNetease" />
-        <Property Id="ARPURLUPDATEINFO" Value="https://github.com/HELPMEEADICE/NekoNetease/releases" />
+        <Property Id="ARPHELPLINK" Value="https://github.com/NekoRain404/NekoNetease" />
+        <Property Id="ARPURLINFOABOUT" Value="https://github.com/NekoRain404/NekoNetease" />
+        <Property Id="ARPURLUPDATEINFO" Value="https://github.com/NekoRain404/NekoNetease/releases" />
         
         <UI>
             <ui:WixUI Id="WixUI_FeatureTree" />

@@ -261,7 +261,7 @@ def build_manifest(
         # time via the `/latest/download/` redirect. Embedding the
         # filename keeps the manifest stable across release tag bumps.
         url = (
-            "https://github.com/HELPMEEADICE/NekoNetease/releases/latest/download/"
+            "https://github.com/NekoRain404/NekoNetease/releases/latest/download/"
             f"{path.name}"
         )
         platforms[key] = {

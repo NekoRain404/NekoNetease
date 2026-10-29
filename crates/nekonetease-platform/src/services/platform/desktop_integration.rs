@@ -44,7 +44,7 @@ const ICON_PNG: &[u8] = include_bytes!("../../../../../assets/icons/nekonetease.
 /// / GNOME Software) with the right name, developer and licence — the
 /// same file the RPM/DEB ship system-wide. Shipped verbatim.
 const METAINFO_XML: &str =
-    include_str!("../../../../../packaging/com.github.helpmeeadice.nekonetease.metainfo.xml");
+    include_str!("../../../../../packaging/com.github.nekorain404.nekonetease.metainfo.xml");
 
 /// Idempotently deploy `.desktop` + icon to the user's `XDG_DATA_HOME`. No-op
 /// on `AppImage`, a development build, or a package-manager-owned binary — each
@@ -92,11 +92,16 @@ pub fn refresh_user_install() -> AppResult<()> {
     // Reverse-DNS name so the desktop-id matches the AppStream component id,
     // which is what makes software centres merge the two rather than list them
     // separately.
-    let desktop_path = apps_dir.join("com.github.helpmeeadice.nekonetease.desktop");
+    let desktop_path = apps_dir.join("com.github.nekorain404.nekonetease.desktop");
     // Earlier releases' filenames. XDG overrides a system entry only with a user
     // entry of the *same* name, so a stale sibling shows as a duplicate tile.
-    // Best-effort; a missing file is not an error.
-    for legacy in ["NekoNetease.desktop", "nekonetease.desktop"] {
+    // Best-effort; a missing file is not an error. The reverse-DNS entry is the desktop-id
+    // releases before the repository moved to `NekoRain404` deployed.
+    for legacy in [
+        "NekoNetease.desktop",
+        "nekonetease.desktop",
+        "com.github.helpmeeadice.nekonetease.desktop",
+    ] {
         let legacy_path = apps_dir.join(legacy);
         if let Err(e) = std::fs::remove_file(&legacy_path)
             && e.kind() != std::io::ErrorKind::NotFound
@@ -130,7 +135,19 @@ pub fn refresh_user_install() -> AppResult<()> {
     }
     // Per-user mirror of the copy RPM/DEB land in `/usr/share/metainfo/`.
     let metainfo_path =
+        data_home.join("metainfo").join("com.github.nekorain404.nekonetease.metainfo.xml");
+    // Same upgrade, other half: a stale component beside the current one lists the app twice.
+    let legacy_metainfo =
         data_home.join("metainfo").join("com.github.helpmeeadice.nekonetease.metainfo.xml");
+    match std::fs::remove_file(&legacy_metainfo) {
+        Ok(()) => log::debug!("desktop_integration: removed legacy metainfo"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::debug!(
+            "desktop_integration: legacy metainfo {} remove failed: {}",
+            legacy_metainfo.display(),
+            describe(&e)
+        ),
+    }
 
     let desktop_body = render_desktop(DESKTOP_TEMPLATE, &exec_path);
 

@@ -7,8 +7,8 @@
   data and render the app with no name / author / version / license.
 
   The component id, the installed desktop file and this file's name all
-  share the `com.github.helpmeeadice.nekonetease` reverse-DNS base — matching
-  the polkit action `com.github.helpmeeadice.nekonetease.update`.
+  share the `com.github.nekorain404.nekonetease` reverse-DNS base — matching
+  the polkit action `com.github.nekorain404.nekonetease.update`.
 
   Shipped verbatim (no templating) by every Linux packaging path so the
   exact same file lands in each: the RPM (scripts/build-rpm.sh), the DEB
@@ -22,7 +22,7 @@
   to keep in lockstep with Cargo.toml.
 -->
 <component type="desktop-application">
-  <id>com.github.helpmeeadice.nekonetease</id>
+  <id>com.github.nekorain404.nekonetease</id>
 
   <name>NekoNetease</name>
   <summary>Music library player with gapless playback and internet radio</summary>
@@ -59,11 +59,11 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">com.github.helpmeeadice.nekonetease.desktop</launchable>
+  <launchable type="desktop-id">com.github.nekorain404.nekonetease.desktop</launchable>
 
-  <url type="homepage">https://github.com/HELPMEEADICE/NekoNetease</url>
-  <url type="bugtracker">https://github.com/HELPMEEADICE/NekoNetease/issues</url>
-  <url type="vcs-browser">https://github.com/HELPMEEADICE/NekoNetease</url>
+  <url type="homepage">https://github.com/NekoRain404/NekoNetease</url>
+  <url type="bugtracker">https://github.com/NekoRain404/NekoNetease/issues</url>
+  <url type="vcs-browser">https://github.com/NekoRain404/NekoNetease</url>
 
   <content_rating type="oars-1.1" />
 

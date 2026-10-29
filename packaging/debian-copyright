@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: NekoNetease
-Source: https://github.com/HELPMEEADICE/NekoNetease
+Source: https://github.com/NekoRain404/NekoNetease
 Comment: NekoNetease's Slint build compiles its fonts and one third-party logo into
  the executable, so this package redistributes them as well as the application
  itself. Each is listed below with its own copyright holder and licence. Their

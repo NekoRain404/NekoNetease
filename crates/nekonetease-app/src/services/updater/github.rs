@@ -1,5 +1,5 @@
 //! Fetches `latest.json` from
-//! `https://github.com/HELPMEEADICE/NekoNetease/releases/latest/download/latest.json`,
+//! `https://github.com/NekoRain404/NekoNetease/releases/latest/download/latest.json`,
 //! plus its sibling `latest.json.minisig` for manifest verification.
 //!
 //! Sends `If-None-Match` when the caller passes a tag, so a check can
@@ -29,7 +29,7 @@ use super::minisign;
 /// updater's trust boundary, and a second configuration surface on it is one more thing that has
 /// to be argued about.
 pub const RELEASES_BASE: &str =
-    "https://github.com/HELPMEEADICE/NekoNetease/releases/latest/download";
+    "https://github.com/NekoRain404/NekoNetease/releases/latest/download";
 
 /// Ceiling on the manifest body. Room for many times the release
 /// matrix it describes, and still a bound: the signature is checked

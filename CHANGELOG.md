@@ -4,6 +4,51 @@ All notable changes to NekoNetease are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version numbers match
 `[workspace.package] version` in `Cargo.toml`.
 
+## [0.2.0]
+
+The first pre-release candidate: everything below 0.1.5 plus the work that finished the NetEase
+surface and made the repository publishable.
+
+### Added
+
+- **MV page**: an inline 16:9 stage with its own transport (play, seek, volume with a mute toggle
+  and `M`), a quality menu shared with the fullscreen overlay, a similar-video rail, per-MV
+  like/collect/share/download and the full comment thread. Hardware decoding is on by default and
+  can be turned off in Settings.
+- **MV cache**: streamed videos are cached on disk under the same bounded, expiring scheme as
+  audio, and a cached tier replays without a ticket request.
+- **Song wiki**: the "About this song" row in the Now Playing overflow, from the block page the
+  client already authenticated for.
+- **Independent pages** for Recommended, Roaming and Charts, with My Library's recommendations
+  category retired (its persisted index is migrated on read).
+- **Search discovery**: hot searches, suggestions, and recommended-playlist and chart sections as
+  card matrices rather than centred columns.
+- **Release chain**: signed `latest.json`, `SHA256SUMS.txt`, build provenance attestations, and the
+  minisign key handling both the workflow and the action need.
+
+### Changed
+
+- The repository and every shipped identifier moved from the `HELPMEEADICE` placeholder to
+  `NekoRain404`: `com.github.nekorain404.nekonetease` is the AppStream id, the polkit action and
+  the desktop-id, and the updater now points at a repository that exists. Upgrades remove the
+  previous desktop entry and metainfo component.
+- The MV transports are two mounts of one volume control and one quality menu, so the page and the
+  overlay cannot drift.
+- `README.md` is illustrated and states what the pre-release covers; issue and pull-request
+  templates are in place.
+
+### Fixed
+
+- A queue naming the same track twice lost every repeat after the first: the by-id summary lookup
+  *removed* each row from its map instead of reading it.
+- Retroactive hashing commits in batches of 256 rather than holding every path and hash of a large
+  library until the end.
+- Playlist import refuses a text file past the archive's 64 MiB ceiling before reading it.
+- The updater's post-swap smoke test compares the printed version exactly (a prefix test accepted
+  `1.2.30` for `1.2.3`) and cannot leave a hung child behind the rollback.
+- Pull-request workflows run with a read-only token, and the signing preflight never runs on a
+  pull request, so no PR can reach the minisign secret.
+
 ## [0.1.5]
 
 First tagged release of the NekoNetease line, built on Melodia's player core.
