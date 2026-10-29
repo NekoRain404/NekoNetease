@@ -35,12 +35,13 @@ const CARD_SELECTION_HOMES: [&str; 4] = [
 
 /// Every grid that can fit on one row, each reading the count off whichever model its mounted
 /// tab drew.
-const LONE_ROW_MOUNTS: [&str; 5] = [
+const LONE_ROW_MOUNTS: [&str; 6] = [
     "views/browse-view.slint",
     "views/charts/charts-view.slint",
     "views/my-library-view.slint",
     "views/recommended/recommended-view.slint",
     "views/recently-played-view.slint",
+    "views/search/discover-section.slint",
 ];
 
 /// The queue sheet owns Escape for as long as it is up and clears its own selection on the first
