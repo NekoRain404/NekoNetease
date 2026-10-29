@@ -10,8 +10,10 @@ on:
     types: [published]
   workflow_dispatch:
 
+# Read-only by default: a pull request must not be able to reach a write token from the
+# workflow it modifies. The two jobs that publish grant themselves `contents: write`.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -84,10 +86,11 @@ jobs:
         run: echo '${{ toJSON(needs) }}'
 
   sign-preflight:
-    # Fork and Dependabot pull requests never receive repository secrets, so a preflight that
-    # needs MINISIGN_SECRET_KEY would fail before any real work started. The `quality` aggregate
-    # treats the resulting skip as neutral.
-    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    # Never on a pull request, fork or not: the job hands MINISIGN_SECRET_KEY to an action the PR
+    # can edit, and a same-repository branch is still code nobody has reviewed merging. Every push
+    # to `main` and every release runs it, which is where a broken secret has to surface anyway.
+    # The `quality` aggregate treats the resulting skip as neutral.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -215,6 +218,9 @@ jobs:
 
   publish:
     needs: [build]
+    # Uploads the signed packages, `latest.json` and `SHA256SUMS.txt` onto the release.
+    permissions:
+      contents: write
     # A tag push and a published Release both start a release build; pull requests and
     # manual dispatches run checks only. The release payload names its tag directly, so
     # that arm reads it there rather than inferring it from `github.ref`.

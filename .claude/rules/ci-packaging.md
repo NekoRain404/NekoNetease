@@ -73,9 +73,12 @@ release notes, creates SHA256SUMS.txt, and uploads them with the packages. Relea
 requires MINISIGN_SECRET_KEY (the entire secret key file encoded as base64) and MINISIGN_PASSWORD
 repository secrets. The release-signing preflight signs a small payload and verifies it against
 assets/updater-pubkey.b64 before any matrix build starts, catching missing secrets, wrong passwords
-and mismatched key pairs. Fork and Dependabot pull requests never receive repository secrets, so
-the preflight is skipped there; the quality aggregate runs with always() and fails on any failed or
-cancelled dependency, so a skip is neutral while a real failure still stops the gate. Manual
+and mismatched key pairs. **It never runs on a pull request**, fork or same-repository: the job
+hands the secret to an action the PR itself can edit, so a same-repository branch is no safer than
+a fork. Every push to main and every release runs it, which is where a broken secret has to surface
+before a tag. The quality aggregate runs with always() and fails on any failed or cancelled
+dependency, so a skip is neutral while a real failure still stops the gate. The workflow's own
+default permission is `contents: read`; only the build job (attestations) and publish grant more. Manual
 dispatches run the same quality gate and build matrix, then expose unsigned package files as Actions
 artifacts for 30 days; they do not update a Release or the updater manifest.
 
