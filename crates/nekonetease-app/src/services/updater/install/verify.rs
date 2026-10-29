@@ -55,7 +55,12 @@ pub(super) async fn verify_swapped_binary(target: &Path, expected_version: &str)
         target.display()
     );
 
-    let cmd = tokio::process::Command::new(target).arg("--version").output();
+    let mut command = tokio::process::Command::new(target);
+    command.arg("--version");
+    // A binary that hangs past the timeout must not stay alive holding the file the rollback is
+    // about to replace; dropping the future alone leaves the child running.
+    command.kill_on_drop(true);
+    let cmd = command.output();
     let output = match timeout(Duration::from_secs(5), cmd).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => {
@@ -82,10 +87,13 @@ pub(super) async fn verify_swapped_binary(target: &Path, expected_version: &str)
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let trimmed = stdout.trim();
-    if !trimmed.starts_with("NekoNetease ") || !trimmed.contains(expected_version) {
+    // Exact, not `contains`: `1.2.3` is a substring of `1.2.30`, so a prefix test accepts the
+    // neighbouring release and the rollback never fires on the one failure it exists for.
+    let printed = trimmed.strip_prefix("NekoNetease ").map(str::trim);
+    if printed != Some(expected_version) {
         return Err(AppError::Validation(format!(
-            "post-swap launch verification: expected `NekoNetease <version>` containing \
-             {expected_version}, got: {trimmed}"
+            "post-swap launch verification: expected `NekoNetease {expected_version}`, \
+             got: {trimmed}"
         )));
     }
 

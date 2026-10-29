@@ -54,10 +54,12 @@ pub async fn get_track_summaries_by_ids(
     })
     .await?;
 
-    let mut map: HashMap<i64, track::TrackSummary> = HashMap::with_capacity(summaries.len());
-    map.extend(summaries.into_iter().map(|t| (t.id, t)));
+    let map: HashMap<i64, track::TrackSummary> = summaries.into_iter().map(|t| (t.id, t)).collect();
 
-    Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
+    // A queue may name the same track twice — a shuffled list that already held it, a hand-built
+    // queue — so the rows are *read* out per id rather than removed: `remove` hands the first
+    // occurrence the row and every repeat `None`, which silently drops them.
+    Ok(ids.iter().filter_map(|id| map.get(id).cloned()).collect())
 }
 
 /// Fetch `TagEditRow` projections by IDs for the Edit-Track-Information dialog, preserving the

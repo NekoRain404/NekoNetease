@@ -234,7 +234,18 @@ async fn import_playlists_from_file(db: &DbPool, src: &Path) -> Result<ImportFil
 }
 
 /// A plain playlist file's half of [`import_playlists_from_file`].
+///
+/// Bounded by the archive's per-entry ceiling: `read_to_string` holds the whole file before the
+/// parser sees a line, and the picker accepts any path, so an oversized pick would be resident
+/// until the error rather than refused first.
 async fn read_playlist_file(db: &DbPool, src: &Path) -> Result<ImportPlaylistResult, AppError> {
+    let len = tokio::fs::metadata(src).await?.len();
+    if len > archive::MAX_TEXT_BYTES {
+        return Err(AppError::Validation(format!(
+            "Playlist file is larger than the {} byte import limit",
+            archive::MAX_TEXT_BYTES
+        )));
+    }
     let content = tokio::fs::read_to_string(src).await?;
     import_text(db, &content, src).await
 }
