@@ -33,6 +33,13 @@ checks only.
   It also runs the Python release-version regression tests, which need no Rust toolchain.
 - audit uses .github/actions/cargo-audit; keep the advisory policy in that one composite. It scans
   the committed Cargo.lock and needs neither Rust compilation nor system dependencies.
+- Every Linux job that compiles installs .github/actions/linux-system-deps first: Slint needs
+  fontconfig and freetype, the audio stack needs ALSA, the platform layer needs D-Bus and
+  Wayland, and the MV decoder needs libmpv. A job that skips it fails in a dependency's build
+  script, which reads as a source error.
+- test-windows compiles every target with cargo check rather than running the suite: the test
+  binaries link, and the runner has no `mpv.lib`. The matrix's Windows slots are off for the same
+  reason — their packaging steps stay so restoring them is one line.
 - quality-linux installs .github/actions/linux-system-deps, explicitly runs
   cargo check --locked -p nekonetease-ui to compile the Slint sources, then runs workspace Clippy
   with -D warnings.

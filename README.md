@@ -74,14 +74,18 @@ NekoNetease 基于 [Kenan Salar 的 Melodia](https://github.com/KenanSalar/Melod
 | Linux | `.tar.gz` | 解压后执行目录内的 `./install-linux.sh`，安装到 `~/.local/share/NekoNetease`，不需要 root |
 | Linux | `.AppImage` | `chmod +x` 后直接运行 |
 | Linux | `.rpm` / `.deb` | 用 `dnf` / `apt` 安装，由包管理器负责升级 |
-| Windows | `.msi` | 按机器安装到 `Program Files`，注册开始菜单快捷方式与音频文件关联 |
-| Windows | `.zip` | 便携版，解压即用 |
+| Windows | `.msi` | 按机器安装到 `Program Files`，注册开始菜单快捷方式与音频文件关联（0.2.0 暂未产出，见下） |
+| Windows | `.zip` | 便携版，解压即用（0.2.0 暂未产出，见下） |
 
 每个发布附件都带有 minisign 签名，发布页同时提供 `SHA256SUMS.txt` 与 GitHub 构建溯源证明；
 应用内的更新来自同一份签名清单，只会接受与自身签名公钥匹配的包。
 
 `aarch64` 暂不受支持：它不在发布矩阵里，且打包脚本、RPM／AppImage 工具链与产物命名都按 `x86_64` 写死，
 移植需要这些步骤一起改动，而不只是增加两个矩阵槽。
+
+`0.2.0` 只发布 Linux 产物。MV 播放引入 libmpv 之后，Windows 包还需要 `mpv.lib` 与随包的 DLL，
+CI 尚未准备这两样；Windows 上仍会跑一次全目标编译检查。Linux 侧 libmpv 由发行版提供
+（Debian／Ubuntu 的 `libmpv2`、Fedora 的 `mpv-libs`），没有它应用照常启动，只是 MV 不可用。
 
 ## 从源码构建
 
@@ -103,10 +107,10 @@ Linux 侧的系统依赖（Debian／Ubuntu）：
 
 ```bash
 sudo apt install libdbus-1-dev libasound2-dev libxkbcommon-dev libfontconfig1-dev \
-                 libfreetype-dev libwayland-dev libssl-dev pkg-config
+                 libfreetype-dev libwayland-dev libssl-dev pkg-config libmpv-dev
 ```
 
-（Fedora 请替换为对应的 `-devel` 包。）Windows 无需额外的项目专用依赖。
+（Fedora 请替换为对应的 `-devel` 包，MV 解码需要 `mpv-libs-devel`。）Windows 无需额外的项目专用依赖。
 
 提交前的四道门禁与 CI 一致：
 

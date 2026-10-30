@@ -98,6 +98,13 @@ First tagged release of the NekoNetease line, built on Melodia's player core.
 
 ### Known limitations
 
+- 0.2.0 ships Linux packages only. MV playback links libmpv, and the Windows slot needs
+  `mpv.lib` plus the DLL beside the binary, which the runner does not provision yet; Windows
+  still gets a full-target compile check in CI.
+- libmpv is a runtime dependency on Linux (`libmpv2` on Debian and Ubuntu, `mpv-libs` on Fedora).
+  Without it the app starts and everything else works; music videos report that playback is
+  unavailable.
+
 - aarch64 is not built; the packaging steps name `x86_64` throughout.
 - Region-locked songs are reported as unavailable without naming the region, because the service
   does not distinguish it on the wire.
