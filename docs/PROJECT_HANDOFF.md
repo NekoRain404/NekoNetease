@@ -230,6 +230,14 @@ Cargo 会以 `.cargo/config.toml` 所在仓库为基准解析该相对值，并�
 - 保留并注明理由：`docs/plans/` 三份仍被规则或交接文档引用；`scripts/generate-test-library.py` 与 `scripts/measure-linux-footprint.sh` 是无引用的开发工具（生成测试库、测量常驻内存），属于有意保留的工具链；`docs/adr/` 按规则不改写。
 - 清理后 `fmt --check`、全工作区 clippy、全量测试与构建再次全绿。
 
+### 2026-10-30 0.2.0 预发布
+
+- 打 tag `v0.2.0`，发布为 GitHub **Pre-release**：`nekonetease-v0.2.0-x86_64-linux.tar.gz`、`SHA256SUMS.txt`、`latest.json`，每份都带 `.minisig`。
+- 签名密钥在本日轮换：仓库里原有的公钥没有对应私钥（生成后丢失），无法签发任何版本。新密钥对公钥写入 `assets/updater-pubkey.b64`（密钥 ID `0F0ADFB4B73EBBF0`），私钥与口令存于仓库 Secrets 与本机 `~/.config/nekonetease/updater/`（600）。此前从未发布过客户端，因此不涉及对已装用户的密钥迁移。
+- CI 现状：`fmt`、`audit`、`slint`、`sign-preflight`、`test-windows` 通过；`clippy` 与 `test-linux` 在编译 `nekonetease-app` 与链接测试二进制时被 runner 终止（exit 143）。已排除依赖缺失、`cargo-audit` 参数、嵌套标签页泄漏与调试信息占用（降到 `-j2` 与 `debug=0` 后仍在同一阶段复现），待诊断——方向是换更大 runner 或把这两项检查拆分成多个任务。
+- 因此本次产物由本机对同一 tag 提交构建（`cargo build --locked --release`，56 分 44 秒，128 MB），用同一把密钥签名，`latest.json` 已用客户端内嵌公钥验证；没有 CI 的 provenance 证明。后续 tag 应当等这两项检查恢复后再走自动发布。
+- 注意：`/releases/latest` 不指向 pre-release，应用内更新暂时看不到 0.2.0；首个正式版需要按非 pre-release 发布。
+
 ### 验证快照（2026-10-29，本机）
 
 - `cargo fmt --all --check`：通过。
