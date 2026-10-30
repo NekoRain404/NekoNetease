@@ -17,6 +17,11 @@ inputs:
 runs:
   using: composite
   steps:
+    # The runner image does not ship minisign; `universe` carries it on every Ubuntu release
+    # this workflow targets. Installed here rather than in the workflow so the four signing
+    # sites and the preflight cannot disagree about whether it exists.
+    - shell: bash
+      run: command -v minisign >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq minisign; }
     - shell: bash
       env:
         MINISIGN_SECRET_KEY: ${{ inputs.secret-key }}
