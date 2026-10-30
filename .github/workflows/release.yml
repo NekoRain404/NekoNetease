@@ -55,10 +55,13 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    # `nekonetease-app` and its twenty test targets are the peak: at four jobs and line tables
+    # the job is killed (exit 143) three minutes into checking it, on every attempt. Two jobs and
+    # no debug info is what fits; `-D warnings` still prints the file and the span.
     env:
-      CARGO_BUILD_JOBS: 4
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/linux-system-deps
@@ -70,10 +73,11 @@ jobs:
 
   test-linux:
     runs-on: ubuntu-latest
+    # Same ceiling as clippy: fifty-two test binaries each link the workspace.
     env:
-      CARGO_BUILD_JOBS: 4
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/linux-system-deps
